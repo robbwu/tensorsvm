@@ -1,0 +1,128 @@
+################################################################################
+### Tue Jun 18 22:42:11 CDT 2019
+################################################################################
+
+
+
+Rsync the project between my machine and the remote system.
+
+## My computer -> Sabine:
+rsync -zvru  --exclude=".*" --exclude="a.out" --exclude="*~"  /Users/pwu/Workspace/TensorSVM/ sabine:~/Workspace/TensorSVM
+
+Notes:
+	-z compression
+	-v verbose
+	-r recursive
+	-u don't overwrite modified file on server (for safety)
+	-exclude=".*" don't sync the dot files and direction; mainly for the fossil
+
+
+## sabine -> my computer
+rsync -zvru  --exclude=".*" --exclude="a.out" --exclude="*~" sabine:~/Workspace/TensorSVM/ /Users/pwu/Workspace/TensorSVM/
+
+## configure the ACME setup
+/Users/pwu/Applications/bin/a
+
+Today's tasks:
+[x] 1. Read LIBSVM data file format into dense matrix;
+2. Implement the PD-IPM on GPU, for linear SVM training;
+[x] 3. Output the model file;
+[x] 4. Use libsvm prediction for prediction, and compare to LIBSVM result
+[x] 5. Automatically find the labels.
+
+Test cmd:
+ ./tensorsvm-train -c 10 -g 0.02 /Users/pwu/Downloads/LIBSVM_DATA/a1a
+
+
+
+/Users/pwu/Workspace/xSVM
+
+
+./tensorsvm-train -c 10 -g 0.02 /Users/pwu/Downloads/LIBSVM_DATA/ijcnn1
+
+Test success! Try covtype:
+
+time ./tensorsvm-train -c 10 -g 0.02 /Users/pwu/Downloads/LIBSVM_DATA/covtype.libsvm.binary.scale.1
+
+################################################################################
+### Train and predict on testing file
+################################################################################
+
+time ./tensorsvm-train -c 10  -test /Users/pwu/Downloads/LIBSVM_DATA/covtype.libsvm.binary.scale.2 /Users/pwu/Downloads/LIBSVM_DATA/covtype.libsvm.binary.scale.1
+
+Before we go into the implementation of GPU, let's try to figure out the accuracy problem.
+======
+
+Test cmd:
+
+./tensorsvm-train-mixed -c 10 -test /Users/pwu/Downloads/LIBSVM_DATA/epsilon_normalized.t.2 /Users/pwu/Downloads/LIBSVM_DATA/epsilon_normalized.t.1
+
+Now I try to use ssyrk instead of dsyrk, hopefully would achieve 2x speedup.
+This seems to work, but Cholesky starts to break when D is very ill-conditioned.
+Trying regularization...
+When trying to solve (Z*Z'+D)\b, using SMW formula it becomes (Z'*D^{-1}*Z + I)\b;
+When D is really ill-conditioned, the system is highly ill-conditioned.
+
+Trying LU factorization instead of Chol? Alright, does not seem good...
+iter 20, mu=3.954e-04, normdx=9.983e-02, normdy=2.711e-05 max/min(D)=9.946e+09 pobj=-2.030857140e+05 dobj=-2.031487813e+05
+iter 25, mu=9.655e-06, normdx=3.936e+00,
+It looks like the error code of Cholesky is a reliable stopping criterion!
+
+OK, how about this. When such thing happens we revert back to high precision/more stable algorithm?
+It seems to work... This is a good story of mixed precision strategy--use high precision when it counts.
+A few high precision steps greatly enhances the final result.
+
+How about pure Barrier method instead of IPM? This way we have a uncontrained optimization problem
+which can be solve via trust-region with truncated Newton.
+
+
+Try multiple cores?
+Yes, it's around 3x faster using 3-6 cores.
+
+
+################################################################################
+### Sat Jun 22 01:40:06 CDT 2019
+################################################################################
+
+Interesting instance... on epsilon, C=100, the single precision transition to double is kind of
+problematic.
+
+$ MKL_NUM_THREADS=3 time ./tensorsvm-train-mixed -c 100 -test /Users/pwu/Downloads/LIBSVM_DATA/epsilon_normalized.t.2 /Users/pwu/Downloads/LIBSVM_DATA/epsilon_normalized.t.1
+
+
+Dataset size 79912 #features 2000
+found labels: 1(+1) -1(-1)
+Reading files took 23.013 seconds
+iter 0, mu=5.000e+01, normdx=4.507e+04, normdy=3.360e+02 max/min(D)=1.000e+00 pobj=2.718996935e+06 dobj=-1.079010894e+07
+DSYRK took 3.410 seconds
+NewtonStep took 1.304 seconds
+iter 5, mu=4.643e+01, normdx=3.674e+04, normdy=2.739e+02 max/min(D)=9.874e+02 pobj=1.531257277e+06 dobj=-9.358870711e+06
+iter 10, mu=8.470e+00, normdx=2.663e+03, normdy=1.985e+01 max/min(D)=9.616e+03 pobj=-1.628719218e+06 dobj=-2.918579660e+06
+iter 15, mu=7.687e-01, normdx=9.188e+01, normdy=6.855e-01 max/min(D)=5.178e+05 pobj=-1.904321887e+06 dobj=-2.023723593e+06
+iter 20, mu=3.669e-02, normdx=1.165e+00, normdy=6.111e-03 max/min(D)=3.423e+08 pobj=-1.942630620e+06 dobj=-1.948463094e+06
+transition to double precision
+iter 25, mu=4.220e-04, normdx=1.902e+02, normdy=5.979e-05 max/min(D)=1.047e+12 pobj=-1.945215660e+06 dobj=-1.945284731e+06
+D is too ill-conditioned 2.367e+17! Terminating.
+iter 29, mu=8.859e-07, normdx=3.979e-02, normdy=5.872e-06 max/min(D)=2.367e+17 pobj=-1.945248987e+06 dobj=-1.945249129e+06
+#BSV 1981, #SV 20583
+Dataset size 20088 #features 2000 nnz=40176000 sparsity=100.000000%
+Predicting on the test file /Users/pwu/Downloads/LIBSVM_DATA/epsilon_normalized.t.2...
+Number of test instances 20088, test features 2000
+intercept b=1.043e-02
+prediction accuracy 0.893 (17931/20088)
+      116.34 real       250.07 user         5.66 sys
+
+
+################################################################################
+### Sun Jun 23 21:24:14 CDT 2019
+################################################################################
+Work plan for today:
+[]1.  Migrate the lin_train.cc to GPU
+[]2.  Add low rank approximation training
+[]3.  Study the quality of low rank approximation w.r.t. gamma.
+[]4.  Another low rank approximation---probably more appropriate when gamma is small
+	and 1. does not work well---retain the diagonal blocks and low rank approx
+	the off diagonal.
+
+
+
