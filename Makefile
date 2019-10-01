@@ -14,7 +14,7 @@ else
 	LFLAGS=-Xlinker -rpath,${MKLROOT}/lib -lnvblas -lmkl_rt -lpthread -lm -ldl -lcudart -lcublas -lcusolver
 endif
 
-target: tensorsvm-train tensorsvm-train-single tensorsvm-train-mixed
+target:  tensorsvm-train-mixed
 
 tensorsvm-train: lin_train.cc
 	$(CXX) $(CFLAGS) $(LFLAGS) $^ -o $@
