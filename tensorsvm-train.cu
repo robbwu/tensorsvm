@@ -1744,7 +1744,7 @@ void rbf_kergen( int m, int n, double *buf, int ldb,
 	int j=blockIdx.y*blockDim.y + threadIdx.y;
 
 	if (i<m && j<n) {
-		buf[i+j*ldb] = YI[i]*YJ[j]*__expf(-gamma*(XI[i] + XJ[j] - 2*XIJ[i+j*ldxij]));
+		buf[i+j*ldb] = YI[i]*YJ[j]*expf(-gamma*(XI[i] + XJ[j] - 2*XIJ[i+j*ldxij]));
 		// printf("[i,j]=[%d,%d], buf[]=%.4f, XI[]=%.4f, XJ[]=%.4f, XIJ[]=%.4f\n", i, j, buf[i+j*ldb],
 		// 	   XI[i], XJ[j], XIJ[i+j*ldxij]);
 	}
