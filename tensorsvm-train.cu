@@ -212,7 +212,8 @@ void predict(double *X,  double *testlabels, double *testinst, long testN, long 
 
 }
 
-double writemodel(char *path, double *X,  double C)
+// need U (Gram matrix approx U*U') for computing b
+double writemodel(char *path, double *X,  double C, double *U)
 {
 	int nSV = 0, nBSV = 0;
 	for( int i=0; i<N; i++ ){
@@ -263,30 +264,56 @@ double writemodel(char *path, double *X,  double C)
 			b = 0;
 		}
 	} else if (T==2) { // RBF Kernel
-		double acc = 0;
-		std::vector<double> bs(std::min(nBSV,100), 0);
-		for (int j=0; j<std::min(nBSV,100); j++) {
-			int jj = iBSV[j];
-			double yj = LABELS[jj];
-			for (int i=0; i<nSV; i++) {
-				int ii = iSV[i];
-				double acc2 = 0;
-				for (int l=0; l<d; l++) {
-					double diff = INST[ii*d+l] - INST[jj*d+l];
-					acc2 += diff * diff;
-				}
-				yj -= X[ii]*LABELS[ii]*exp(-g*acc2);
+        { // computing b based on original model; could have large variance if LRA is inaccurate
+            double acc = 0;
+            std::vector<double> bs(std::min(nBSV,500), 0);
+            for (int j=0; j<std::min(nBSV,500); j++) {
+                int jj = iBSV[j];
+                double yj = LABELS[jj];
+                for (int i=0; i<nSV; i++) {
+                    int ii = iSV[i];
+                    double acc2 = 0;
+                    for (int l=0; l<d; l++) {
+                        double diff = INST[ii*d+l] - INST[jj*d+l];
+                        acc2 += diff * diff;
+                    }
+                    yj -= X[ii]*LABELS[ii]*exp(-g*acc2);
 
-			}
-			acc += yj;
-			bs[j] = yj;
-			// printf("y[%d]=%.3e\n", jj, yj);
-		}
-		b = acc/std::min(nBSV,100);
-		double sumsq = 0;
-		for( int j=0; j<bs.size(); j++ ) 
-			sumsq += (bs[j]-b)*(bs[j]-b);
-		printf("mean b=%.6e std b=%.6e, #samples=%d\n ", b, sqrt(sumsq/bs.size()), bs.size());
+                }
+                acc += yj;
+                bs[j] = yj;
+                // printf("y[%d]=%.3e\n", jj, yj);
+            }
+            b = acc/std::min(nBSV,500);
+            double sumsq = 0;
+            for( int j=0; j<bs.size(); j++ ) 
+                sumsq += (bs[j]-b)*(bs[j]-b);
+            printf("original mean b=%.6e std b=%.6e, #samples=%d\n ", b, sqrt(sumsq/bs.size()), bs.size());
+        }
+        {
+            double acc = 0;
+            std::vector<double> bs(std::min(nBSV,100), 0);
+            for (int j=0; j<std::min(nBSV,100); j++) {
+                int jj = iBSV[j];
+                double yj = LABELS[jj];
+                for (int i=0; i<nSV; i++) {
+                    int ii = iSV[i];
+                    double sum = 0; 
+                    for (int k=0; k<K; k++) {
+                        sum += U[ii*K+k] * U[jj*K+ k];
+                    }
+                    yj -= X[ii] * LABELS[jj] * sum; 
+                }
+                acc += yj;
+                bs[j] = yj;
+                // printf("y[%d]=%.3e\n", jj, yj);
+            }
+            b = acc/std::min(nBSV,100);
+            double sumsq = 0;
+            for( int j=0; j<bs.size(); j++ ) 
+                sumsq += (bs[j]-b)*(bs[j]-b);
+            printf("approx mean b=%.6e std b=%.6e, #samples=%d\n ", b, sqrt(sumsq/bs.size()), bs.size());
+        }
 	}
 
 	FILE *f = fopen(path, "w");
@@ -383,7 +410,7 @@ int main(int argc, char *argv[])
 			cblas_dscal(d, LABELS[i], &INST[i*d], 1);
 
 		// write to the model
-		writemodel(modelfilepath, X, C);
+		writemodel(modelfilepath, X, C, NULL); // No use of U
 
 		// prediction if test file is supplied
 		if( testfilepath ) {
@@ -464,7 +491,7 @@ int main(int argc, char *argv[])
 		printf(" Done in %.0f seconds.\n", time_span.count());
 
 		clock_gettime( CLOCK_MONOTONIC, &start);
-		writemodel(modelfilepath, X, C);
+		writemodel(modelfilepath, X, C, U);
 		clock_gettime( CLOCK_MONOTONIC, &end);
 		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;
 		printf("WRITEMODEL elapsed time = %.0f seconds\n",  diff);
