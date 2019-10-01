@@ -580,6 +580,10 @@ void parsecmd(int argc, char *argv[])
 		} else if (strcmp(argv[i], "-t") == 0) {
 			i++;
 			T = atoi(argv[i]);
+            if (T!=0 && T!=2) {
+                printf("Error: unimplemented -t %d\n", T);
+                exit(1);
+            }
 		} else if (strcmp(argv[i], "-N") == 0) {
 			i++;
 			NN = atoi(argv[i]);
