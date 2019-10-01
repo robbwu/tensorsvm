@@ -470,7 +470,7 @@ int main(int argc, char *argv[])
 		printf("WRITEMODEL elapsed time = %.0f seconds\n",  diff);
 
 		free(U);
-		printf("testfilepath=%d\n", testfilepath);
+		printf("testfilepath=%s\n", testfilepath);
 		if( testfilepath ) {
 			double *testlabels, *testinst;
 			long testN, testd;
