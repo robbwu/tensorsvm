@@ -164,7 +164,7 @@ void predict(double *X,  double *testlabels, double *testinst, long testN, long 
 			if( f * testlabels[i] > 0) cntyes++;
 		}
 		printf("prediction accuracy %.3f (%d/%d)\n", 1.0*cntyes/testN, cntyes, testN);
-	} else if (T==1) { //RBF kernel
+	} else if (T==2) { //RBF kernel
 		double acc = 0;
 		std::vector<double> bs(std::min(nBSV,100), 0);
 		for (int j=0; j<std::min(nBSV,100); j++) {
