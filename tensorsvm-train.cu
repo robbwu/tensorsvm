@@ -262,7 +262,7 @@ double writemodel(char *path, double *X,  double C)
 			printf("Empty boundary SV! Give up.\n");
 			b = 0;
 		}
-	} else if (T==1) { // RBF Kernel
+	} else if (T==2) { // RBF Kernel
 		double acc = 0;
 		std::vector<double> bs(std::min(nBSV,100), 0);
 		for (int j=0; j<std::min(nBSV,100); j++) {
@@ -293,7 +293,7 @@ double writemodel(char *path, double *X,  double C)
 	fprintf(f,"svm_type c_svc\n");
 	if( T== 0 )
 		fprintf(f,"kernel_type linear\n");
-	else if( T == 1 ) {
+	else if( T == 2 ) {
 		fprintf(f,"kernel_type rbf\n");
 		fprintf(f,"gamma %.7f\n", g);
 	}
