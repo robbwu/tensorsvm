@@ -446,8 +446,8 @@ int main(int argc, char *argv[])
 			predict(X,  testlabels, testinst, testN, testd);
 		}
 	} else if ( T == 2 ) { // RBF kernel.
-		printf("RBF kernel: gamma=%.3e, C=%.3e\n", g, C);
-		printf("RBF Approximation Rank: %d\n", K);
+		printf("RBF kernel: gamma=%.3e, C=%.3e ", g, C);
+		printf("Approximation Rank K=%d\n", K);
 		double *U = (double *) malloc( sizeof(double) * N*K );
 		int ldu = K;
 		clock_gettime( CLOCK_MONOTONIC, &start);
@@ -1049,7 +1049,7 @@ void mpc(double *Z, double *a, double C, double *X, double *Xi, int N, int d)
 			D[i] = S[i] / X[i] + Xi[i]/ (C-X[i]);
 			// printf("D[%d]=%.3e ", i, D[i]);
 		}
-		printf("\n");
+		//printf("\n");
 		int imax = cblas_idamax(N, D, 1);
 		int imin = cblas_idamin(N, D, 1);
 		//printf("D is too ill-conditioned %.3e! Terminating.\n", D[imax]/D[imin]);
@@ -1065,7 +1065,7 @@ void mpc(double *Z, double *a, double C, double *X, double *Xi, int N, int d)
 			primalobj -= X[i];
 			dualobj -= C*Xi[i];
 		}
-		// if( iter%5 == 0)
+		if( iter%5 == 0)
 			printf("iter %d, mu=%.3e, normdx=%.3e, normdy=%.3e max/min(D)=%.3e pobj=%.9e dobj=%.9e\n",
 				iter, mu, normdx, normdy, D[imax]/D[imin], primalobj, dualobj);
 		if( mu<1.e-7 && normdx<1.e-7 && normdy <1.e-7 ) {
@@ -1113,7 +1113,7 @@ work:
 		}
 		clock_gettime(CLOCK_MONOTONIC, &end);	/* mark the end time */
 		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;
-		printf("DSYRK elapsed time = %.3e seconds\n",  diff);
+		if (iter==0) printf("DSYRK elapsed time = %.3e seconds\n",  diff);
 		// clock_t difference = clock() - before;
 		
 
@@ -1152,7 +1152,7 @@ work:
 		NewtonStep(Z, D, M, C, a, X, S, Xi, r, work, d);
 		clock_gettime( CLOCK_MONOTONIC, &end);
 		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;
-		printf("Newton elapsed time = %.3e seconds\n",  diff);
+		if (iter==0) printf("Newton elapsed time = %.3e seconds\n",  diff);
 		// if(iter==0) printf("NewtonStep took %.3f seconds\n", 1.0*difference  / CLOCKS_PER_SEC);
 		//writematrix("/Users/pwu/ownCloud/Projects/2019June_TensorSVM/r1.csv", r, 3*N+1, 1, 1);
 		double alpha = 1;
@@ -1233,7 +1233,9 @@ void NewtonStep(double *Z, double *D, double *M, double C, double *a, double *X,
 	SMWSolve(Z, D, M, r7, &work[3*N], d); // overwrites r7;
     auto t2 = high_resolution_clock::now();
     duration<double> time_span = duration_cast<duration<double>>(t2 - t1);
+#ifdef DEBUG
     printf("SMWSolve in %.3f seconds.\n", time_span.count());
+#endif
 	r6 = r2[0] + cblas_ddot(N, a, 1, r7, 1);
 	for( int i=0; i<N; i++ ) b[i] = a[i];
 	SMWSolve(Z, D, M, b, &work[3*N], d);
@@ -1432,11 +1434,10 @@ double LRA(double *Z, int ldz, double *U, int ldu, long n, long k)
 	for(int pr=0; pr<1; pr++) {
 		// Wd= K(Zd)*Qd
 		clock_gettime(CLOCK_MONOTONIC, &start);	/* mark start time */
-		printf("rbf_kermatmul: N=%d ", N);
+		printf("rbf_kermatmul ");
+		START_TIMER
 		rbf_kermatmul(Zd, N, Yd, Qd, N, Wd, N, N, k, handle);
-		clock_gettime(CLOCK_MONOTONIC, &end);	/* mark the end time */
-		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;
-		printf("elapsed time = %.3e seconds\n",  diff);
+		END_TIMER
 
 
 
@@ -1450,7 +1451,9 @@ double LRA(double *Z, int ldz, double *U, int ldu, long n, long k)
 		statusH = cusolverDnDorgqr_bufferSize(cusolverH, n, k, k, Wd, n, d_tau, &lwork_orgqr);
 		assert(statusH == CUSOLVER_STATUS_SUCCESS);
 		lwork = (lwork_geqrf < lwork_orgqr)? lwork_orgqr : lwork_geqrf;
+#ifdef DEBUG
 		printf("lwork=%d\n", lwork);
+#endif
 		gpuErrchk( cudaMalloc( &d_work, sizeof(double)*lwork ) );
 
 		gpuErrchk( cudaMalloc( &d_info, sizeof(int )) );
@@ -1465,18 +1468,11 @@ double LRA(double *Z, int ldz, double *U, int ldu, long n, long k)
 
 
 
-		clock_gettime(CLOCK_MONOTONIC, &start);	/* mark start time */
-		printf("rbf_kermatmul: N=%d ", N);
 		rbf_kermatmul(Zd, N, Yd, Wd, N, Qd, N, N, k, handle);
-		clock_gettime(CLOCK_MONOTONIC, &end);	/* mark the end time */
-		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;
-		printf("elapsed time = %.3e seconds\n",  diff);
-		clock_gettime(CLOCK_MONOTONIC, &start);	/* mark start time */
+
 		cublasDgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, k, k, N, &done, Wd, N, Qd, N, &dzero,
 					Cd, k);
-		clock_gettime(CLOCK_MONOTONIC, &end);	/* mark the end time */
-		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;
-		printf(" Compute C: Dgemm elapsed time = %.3e seconds\n",  diff);
+
 
 		cudaMemcpy(Qd, Wd, sizeof(double)*n*k, cudaMemcpyDeviceToDevice);
 		// cudaFree(d_work);
@@ -1527,23 +1523,28 @@ double LRA(double *Z, int ldz, double *U, int ldu, long n, long k)
 	rbf_fnorm_res(Zd, N, Yd, Um, n, n, k, &knorm,&kunorm,  handle);
 	printf("rbf_fnorm_res ");
 	END_TIMER
+	printf("fnorm(K)=%.3e fnorm(K-U*U=%.3e')\n", knorm, kunorm);
 #endif // DEBUG
 
-	printf("fnorm(K)=%.3e fnorm(K-U*U=%.3e')\n", knorm, kunorm);
+
 	// cublasDgeam(handle, CUBLAS_OP_T, CUBLAS_OP_T, k, n, &done,
 	// 			Um, n, &dzero, Um, n, Um,
 	// cudaDeviceSynchronize();
 	gpuErrchk(cudaMemcpy( W, Um, sizeof(double)*N*k, cudaMemcpyDeviceToHost ));
 	// gpuErrchk(cudaMemcpy( Zt, Um, sizeof(double)*N*k, cudaMemcpyDeviceToHost ));
 	cudaDeviceSynchronize();
+#ifdef DEBUG
 	printf("Um->W copy finished sizeof(long)=%d\n", sizeof(long));
 	printf("Sync done\n");
+#endif
 	for( long j=0; j<k; j++ ) {
 		for( long i=0; i<N; i++ ) {
 			U[i*ldu+j] = W[i+j*N];
 		}
 	}
+#ifdef DEBUG
 	printf("copying U GPU->CPU finished\n");
+#endif
 	cudaFree(Um);
 	cudaFree(Qd);
 	cudaFree(Yd);
@@ -1558,7 +1559,9 @@ double LRA(double *Z, int ldz, double *U, int ldu, long n, long k)
 	// cudaFree(Td);
 	cublasDestroy(handle);
 	cusolverDnDestroy(cusolverH);
+#ifdef DEBUG
 	printf("freeing memory finished\n");
+#endif
 	return l1;
 	/*
 	if (N<=10 && k<=10) {
