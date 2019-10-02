@@ -33,6 +33,19 @@
 # define DEBUG_PRINT(x) do {} while (0)
 #endif
 
+// convenient timer. just put these two states around a piece of code. 
+#define START_TIMER {\
+		struct timespec start, end; \
+		double diff; \
+		clock_gettime(CLOCK_MONOTONIC, &start);	/* mark start time */ \
+		
+#define END_TIMER \
+		clock_gettime(CLOCK_MONOTONIC, &end);	/* mark the end time */\
+		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;\
+		printf("elapsed time = %.3e seconds\n",  diff);\
+		}
+
+
 #define BILLION 1000000000L
 #define MAX_MPC_ITER 100
 /* Linear SVM training using interior point method;
@@ -461,6 +474,7 @@ int main(int argc, char *argv[])
 		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;
 		printf("MPC elapsed time = %.0f seconds\n",  diff);
 
+#ifdef DEBUG
 		printf("Calculating Primal/Dual Objective...");
 		using namespace std::chrono;
 		auto t1 = high_resolution_clock::now();
@@ -491,7 +505,7 @@ int main(int argc, char *argv[])
 		auto t2 = high_resolution_clock::now();
 		duration<double> time_span = duration_cast<duration<double>>(t2 - t1);
 		printf(" Done in %.0f seconds.\n", time_span.count());
-
+#endif // DEBUG
 		clock_gettime( CLOCK_MONOTONIC, &start);
 		writemodel(modelfilepath, X, C, U);
 		clock_gettime( CLOCK_MONOTONIC, &end);
@@ -1507,8 +1521,13 @@ double LRA(double *Z, int ldz, double *U, int ldu, long n, long k)
 	void rbf_fnorm_res(double *Zd, int ldz, double *Yd, double *U, int ldu, int n, int k,
 					   double *fnorm, double *fnorm_res, cublasHandle_t handle);
 	double knorm = 0, kunorm = 0;
-	rbf_fnorm_res(Zd, N, Yd, Um, n, n, k, &knorm,&kunorm,  handle);
 
+#ifdef DEBUG
+	START_TIMER
+	rbf_fnorm_res(Zd, N, Yd, Um, n, n, k, &knorm,&kunorm,  handle);
+	printf("rbf_fnorm_res ");
+	END_TIMER
+#endif // DEBUG
 
 	printf("fnorm(K)=%.3e fnorm(K-U*U=%.3e')\n", knorm, kunorm);
 	// cublasDgeam(handle, CUBLAS_OP_T, CUBLAS_OP_T, k, n, &done,
