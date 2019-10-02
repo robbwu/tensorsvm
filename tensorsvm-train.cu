@@ -1214,7 +1214,12 @@ void NewtonStep(double *Z, double *D, double *M, double C, double *a, double *X,
 		r5[i] = r1[i] - r3[i]/X[i] + r4[i] / (C - X[i]);
 		r7[i] = r5[i];
 	}
+    using namespace std::chrono;
+    auto t1 = high_resolution_clock::now();
 	SMWSolve(Z, D, M, r7, &work[3*N], d); // overwrites r7;
+    auto t2 = high_resolution_clock::now();
+    duration<double> time_span = duration_cast<duration<double>>(t2 - t1);
+    printf("SMWSolve in %.3f seconds.\n", time_span.count());
 	r6 = r2[0] + cblas_ddot(N, a, 1, r7, 1);
 	for( int i=0; i<N; i++ ) b[i] = a[i];
 	SMWSolve(Z, D, M, b, &work[3*N], d);
@@ -1413,7 +1418,7 @@ double LRA(double *Z, int ldz, double *U, int ldu, long n, long k)
 	for(int pr=0; pr<1; pr++) {
 		// Wd= K(Zd)*Qd
 		clock_gettime(CLOCK_MONOTONIC, &start);	/* mark start time */
-		printf("rbf_kermatmul: N=%d\n", N);
+		printf("rbf_kermatmul: N=%d ", N);
 		rbf_kermatmul(Zd, N, Yd, Qd, N, Wd, N, N, k, handle);
 		clock_gettime(CLOCK_MONOTONIC, &end);	/* mark the end time */
 		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;
@@ -1446,9 +1451,18 @@ double LRA(double *Z, int ldz, double *U, int ldu, long n, long k)
 
 
 
+		clock_gettime(CLOCK_MONOTONIC, &start);	/* mark start time */
+		printf("rbf_kermatmul: N=%d ", N);
 		rbf_kermatmul(Zd, N, Yd, Wd, N, Qd, N, N, k, handle);
+		clock_gettime(CLOCK_MONOTONIC, &end);	/* mark the end time */
+		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;
+		printf("elapsed time = %.3e seconds\n",  diff);
+		clock_gettime(CLOCK_MONOTONIC, &start);	/* mark start time */
 		cublasDgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, k, k, N, &done, Wd, N, Qd, N, &dzero,
 					Cd, k);
+		clock_gettime(CLOCK_MONOTONIC, &end);	/* mark the end time */
+		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;
+		printf(" Compute C: Dgemm elapsed time = %.3e seconds\n",  diff);
 
 		cudaMemcpy(Qd, Wd, sizeof(double)*n*k, cudaMemcpyDeviceToDevice);
 		// cudaFree(d_work);
@@ -1777,7 +1791,7 @@ void rbf_kergen( int m, int n, double *buf, int ldb,
 	int j=blockIdx.y*blockDim.y + threadIdx.y;
 
 	if (i<m && j<n) {
-		buf[i+j*ldb] = YI[i]*YJ[j]*expf(-gamma*(XI[i] + XJ[j] - 2*XIJ[i+j*ldxij]));
+		buf[i+j*ldb] = YI[i]*YJ[j]*__expf(-gamma*(XI[i] + XJ[j] - 2*XIJ[i+j*ldxij]));
 		// printf("[i,j]=[%d,%d], buf[]=%.4f, XI[]=%.4f, XJ[]=%.4f, XIJ[]=%.4f\n", i, j, buf[i+j*ldb],
 		// 	   XI[i], XJ[j], XIJ[i+j*ldxij]);
 	}
