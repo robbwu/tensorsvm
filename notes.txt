@@ -138,7 +138,16 @@ performance branch created. In the branch, I will clean up the code a bit;
 2. preapre for supporting multiple GPUs, and out of core processing. 
 
 
+Running EPSILON (2000 feature, dense, 400,000 training, 100,000 testing)
+TensorSVM: 12m26s, including 243 reading file and 244 writing file. Test accuracy: 84.6%
+ThunderSVM: 18m46s, test accuracy: 85.9%
+Code commit: 1f2271b
+branch: perf
 
+LRA: FP64->FP32. Result:
+Epsilon: 243s -> 123s
+Covtype: 72s -> 40s
 
+The accuracy does not seem to be any different. 
 
 
