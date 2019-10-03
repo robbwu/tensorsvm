@@ -277,34 +277,6 @@ double writemodel(char *path, double *X,  double C, double *U)
 			b = 0;
 		}
 	} else if (T==2) { // RBF Kernel
-        /*
-        { // computing b based on original model; could have large variance if LRA is inaccurate
-            double acc = 0;
-            std::vector<double> bs(std::min(nBSV,500), 0);
-            for (int j=0; j<std::min(nBSV,500); j++) {
-                int jj = iBSV[j];
-                double yj = LABELS[jj];
-                for (int i=0; i<nSV; i++) {
-                    int ii = iSV[i];
-                    double acc2 = 0;
-                    for (int l=0; l<d; l++) {
-                        double diff = INST[ii*d+l] - INST[jj*d+l];
-                        acc2 += diff * diff;
-                    }
-                    yj -= X[ii]*LABELS[ii]*exp(-g*acc2);
-
-                }
-                acc += yj;
-                bs[j] = yj;
-                // printf("y[%d]=%.3e\n", jj, yj);
-            }
-            b = acc/std::min(nBSV,500);
-            double sumsq = 0;
-            for( int j=0; j<bs.size(); j++ ) 
-                sumsq += (bs[j]-b)*(bs[j]-b);
-            printf("original mean b=%.6e std b=%.6e, #samples=%d\n ", b, sqrt(sumsq/bs.size()), bs.size());
-        }
-        */
         {
             double acc = 0;
             std::vector<double> bs(std::min(nBSV,50), 0);

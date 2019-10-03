@@ -126,3 +126,19 @@ Work plan for today:
 
 
 
+################################################################################
+### 9/30/2019 
+################################################################################
+
+TODO: 
+performance branch created. In the branch, I will clean up the code a bit; 
+1. change the first case to float instead of double (mostly). The second phase needs to be in 
+	double though. 
+
+2. preapre for supporting multiple GPUs, and out of core processing. 
+
+
+
+
+
+
