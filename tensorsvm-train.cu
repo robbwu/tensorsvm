@@ -8,7 +8,7 @@
 #include <mkl.h>
 #include <time.h>
 
-#include <algorithm>
+#include <algorithm> // std::min
 #include <vector>
 #include <chrono>
 #include <utility> // std:swap
@@ -111,6 +111,32 @@ struct daxpy_functor
 		return a * x + y;
 	}
 };
+
+template<typename T, typename S>
+void matcpy(int m, int n,  const char *Amajor, T* A, int lda, const char *Bmajor, S* B, int ldb )
+{
+	if (*Amajor == 'R' && *Bmajor == 'R') {
+		for(int i=0; i<m; i++) 
+			for(int j=0; j<n; j++) 
+				A[i*lda+j] = B[i*ldb+j]; 
+	} else if (*Amajor == 'R' && *Bmajor == 'C') {
+		for(int i=0; i<m; i++) 
+			for(int j=0; j<n; j++) 
+				A[i*lda+j] = B[i+j*ldb]; 
+	} else if (*Amajor == 'C' && *Bmajor == 'R') {
+		for(int i=0; i<m; i++) 
+			for(int j=0; j<n; j++) 
+				A[i+j*lda] = B[i*ldb+j]; 
+	} else if (*Amajor == 'C' && *Bmajor == 'C') {
+		for(int i=0; i<m; i++) 
+			for(int j=0; j<n; j++) 
+				A[i+j*lda] = B[i+j*ldb]; 
+	} else {
+		printf("unsupported major: Amajor=%c Bmajor=%c", *Amajor, *Bmajor); 
+	}
+
+
+}
 
 // debuging devise
 
@@ -969,6 +995,8 @@ void project(double *X, double *Y, double *a, long n, long d)
 // Z is labeled; a is +1/-1 labes.
 void mpc(double *Z, double *a, double C, double *X, double *Xi, int N, int d)
 {
+	cublasHandle_t handle; 
+	cublasCreate(&handle); 
 	struct timespec start, end;
 	float diff;
 	// printf("mpc: N=%d, d=%d\n", N, d);
@@ -1019,7 +1047,7 @@ void mpc(double *Z, double *a, double C, double *X, double *Xi, int N, int d)
 	IPIV = ipiv;
 
 	double *Md, *Zd; 
-	const int NN = ?;
+	const int NN = 10000;
 	gpuErrchk( cudaMalloc( &Md, sizeof(double)*d*d  ));
 	gpuErrchk( cudaMalloc( &Zd, sizeof(double)*NN*d ));
 	double *Zt = (double*) malloc(sizeof(double)*NN*d); 
@@ -1082,9 +1110,6 @@ void mpc(double *Z, double *a, double C, double *X, double *Xi, int N, int d)
 			break;
 		}
 
-
-
-work:
 		// scale the rows of Zscaled
 
 		{ // change to double precision
@@ -1101,13 +1126,16 @@ work:
 		clock_gettime(CLOCK_MONOTONIC, &start);	/* mark start time */
 		{	// M = Zdscaled' * Zdscaled
 			//cblas_dsyrk(CblasRowMajor, CblasLower, CblasTrans, d, N, 1.0, Zdscaled, d, 0, M, d);
+			const int NN = 10000; 
 			cudaMemset( Md, 0, sizeof(double) * d * d );
-			for(int i=0; i<N; i+=N) {
-				int ib = std::min(NN, N-i); 
+			for(int i=0; i<N; i+=NN) {
+				int ib = min(NN, N-i); 
+				
 				matcpy( ib, d, "ColMajor", Zt, ib, "RowMajor", &Zdscaled[i*d], d );
-				gpuErrchk( cudaMemcpy( Zd, Zt, sizeof(double)*ib*d )); 
-				cublasDsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_T, d, ib, &sone,
-							Zd, ib, &sone, Md, d);
+				gpuErrchk( cudaMemcpy( Zd, Zt, sizeof(double)*ib*d, cudaMemcpyHostToDevice )); 
+				double done = 1.0; 
+				cublasDsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_T, d, ib, &done,
+							Zd, ib, &done, Md, d);
 
 			}
 			gpuErrchk( cudaMemcpy( Mt, Md, sizeof(double)*d*d, cudaMemcpyDeviceToHost));
@@ -1119,7 +1147,7 @@ work:
 
 		
 
-		if( single_flag ) { for( int i=0; i<d*d; i++ ) M[i] = Ms[i]; }
+
 
 		for( int i=0; i<d; i++ ) M[i*d+i] += 1.0; // M = Z'*D^{-1}*Z + I
 		//writematrix("/Users/pwu/ownCloud/Projects/2019June_TensorSVM/M.csv", M, d, d, d);
@@ -1127,17 +1155,8 @@ work:
 		int info = LAPACKE_dpotrf(LAPACK_ROW_MAJOR, 'L', d, M, d);
 		
 		if (info != 0) {
-			if( !single_flag ) { // already in double precision; give up.
-				printf("Cholesky fact info error %d; solver becomes unstable. Terminate.\n", info);
-				return;
-			} else { // in single precision; transition
-				//printf("Cholesky fact info error %d; Regularizing it...\n", info);
-				//M[(info-1)*d+(info-1)] += 1e-6;
-				//goto work;
-				printf("transition to double precision\n");
-				single_flag = 0;
-				goto work;
-			}
+			printf("Cholesky fact info error %d; solver becomes unstable. Terminate.\n", info);
+			return;
 		}
 		/* Experiment with LU instead of Chol; does not work and no warning.
 		for( int i=0; i<d; i++ )
@@ -1207,6 +1226,8 @@ work:
 	free(S);  free(r); free(r_aff); free(work); free(q); free(e); free(D);
 	free(Zscaled); free(M); free(Zt); free(Mt);
 	cudaFree(Md); cudaFree(Zd); 
+
+	cublasDestroy(handle);
 }
 
 
@@ -1359,31 +1380,7 @@ void testKerMat(double *Z)
 
 #ifdef CUDA
 // matrix copy: A<-B
-template<typename T>
-void matcpy(int m, int n,  char *Amajor, T* A, int lda, char *Bmajor, T* B, ldb )
-{
-	if (*Amajor == 'R' && *Bmajor == 'R') {
-		for(int i=0; i<m; i++) 
-			for(int j=0; j<n; j++) 
-				A[i*lda+j] = B[i*ldb+j]; 
-	} else if (*Amajor == 'R' && *Bmajor == 'C') {
-		for(int i=0; i<m; i++) 
-			for(int j=0; j<n; j++) 
-				A[i*lda+j] = B[i+j*ldb]; 
-	} else if (*Amajor == 'C' && *Bmajor == 'R') {
-		for(int i=0; i<m; i++) 
-			for(int j=0; j<n; j++) 
-				A[i+j*lda] = B[i*ldb+j]; 
-	} else if (*Amajor == 'C' && *Bmajor == 'C') {
-		for(int i=0; i<m; i++) 
-			for(int j=0; j<n; j++) 
-				A[i+j*lda] = B[i+j*ldb]; 
-	} else {
-		printf("unsupported major: Amajor=%c Bmajor=%c", *Amajor, *Bmajor); 
-	}
 
-
-}
 // ===========================================================================
 // RBF kernel generation and low rank approximation on GPU
 // !!!Note that All Matrices on GPUs are COLUMN MAJOR!!!
@@ -1411,42 +1408,20 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 	}		
 	struct timespec start, end;
 	double diff;
-	// create random matrix of size n*k
-	//float *Qd;  // n*k, column major, ld=n
-	//gpuErrchk(cudaMalloc( &Qd, sizeof(float)*n*k ));
+
+	// Q: n*k, row-major
 	float *Q = (float*) malloc( sizeof(float)*n*k );
+	int ldq = k; 
 	for( int i=0; i<n; i++ ) {
 		for( int j=0; j<k; j++ ) {
-			Q[i*k+j] = gaussrand();
+			Q[i*ldq+j] = gaussrand();
 		}
 	}
-	int ldq = k; 
-	//cublasSetMatrix(n, k, sizeof(float), Q, n, Qd, n);
-
-	//float *Wd;
-	//gpuErrchk(cudaMalloc( &Wd, sizeof(float)*n*k ));
-
-/*
-	float *Zt = (float*) malloc( N*d*sizeof(float) );
-	// row major -> col major on GPU
-	for( int i=0; i<N; i++ )
-		for( int j=0; j<d; j++)
-			Zt[i+j*N] = Z[i*d+j];
-*/
-	//float *Zd, *Yd;
-	//gpuErrchk(cudaMalloc( &Zd, sizeof(float)*N*d ));
-	//gpuErrchk(cudaMalloc( &Yd, sizeof(float)*N ));
-	//gpuErrchk(cudaMemcpy( Zd, Zt, sizeof(float)*N*d, cudaMemcpyHostToDevice ));
-	//gpuErrchk(cudaMemcpy( Qd, Q, sizeof(float)*N*k, cudaMemcpyHostToDevice ));
-	//gpuErrchk(cudaMemcpy( Yd, LABELS, sizeof(float)*N, cudaMemcpyHostToDevice ));
-
-	// W=K(Z)*Q;
-	// printf("done.\n");
-	float *W;
-	W = (float*) malloc( N*k*sizeof(float) );
+	// W: n*k, row-major
+	float *W = (float*) malloc( N*k*sizeof(float) );
 	int ldw = k; 
 
-	int lwork = 0, lwork_geqrf = 0, lwork_orgqr = 0;
+	int lwork = 0;
 	float *d_work, *d_tau;
 	int *d_info;
 	float  *Cd;
@@ -1458,11 +1433,11 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 
 
 	for(int pr=0; pr<1; pr++) {
-		printf("rbf_kermatmul ");
-		START_TIMER
+
 		//rbf_kermatmul(Zd, N, Yd, Qd, N, Wd, N, N, k, handle);
 		// W = K*Q, on CPU. W,K,Q are all row-major
-		auto RBF_KERMATMUL = [&](float *Q, int ldq, float *W, int ldw)
+		//int d = d; 
+		auto RBF_KERMATMUL = [k,Z,ldz, handle](float *Q, int ldq, float *W, int ldw, int d)
 		{ 
 			const int NN = 10000;
 			float *Z1t = (float*) malloc( sizeof(float) * NN * d );
@@ -1479,10 +1454,10 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 			gpuErrchk( cudaMalloc( &Wd,  sizeof(float) * NN * k ));
 
 			for (int i=0; i<N; i+=NN) { 
-				int rn = std::min(NN, N-i); 
+				int rn = min(NN, N-i); 
 				cudaMemset(Wd, 0, sizeof(float)*NN*k); //Wd = 0; 
 				for (int j=0; j<N; j+=NN) { 
-					int cn = std::min(NN, N-j); 
+					int cn = min(NN, N-j); 
 					
 					matcpy(rn, d, "ColMajor", Z1t, rn, "RowMajor", &Z[i*ldz], ldz );
 					matcpy(cn, d, "ColMajor", Z2t, cn, "RowMajor", &Z[j*ldz], ldz );
@@ -1505,36 +1480,50 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 
 			free(Z1t); free(Z2t); free(Qt); free(Wt); 
 			cudaFree(Zd1); cudaFree(Zd2); cudaFree(Yd1); cudaFree(Yd2); cudaFree(Qd); cudaFree(Wd);
-		}
-		RBF_KERMATMUL(Q, ldq, W, ldw); 
+		};
+		printf("rbf_kermatmul ");
+		START_TIMER
+		RBF_KERMATMUL(Q, ldq, W, ldw, d); 
 		END_TIMER
 
 		// W = Ortho(W)
-		void ortho(float *, int, int);
+		//void ortho(float *, int, int);
+		auto ortho = [](float *W, int n, int k){};
 		ortho(W, n, k); // W is row-major
-#if 0
-		statusH = cusolverDnSgeqrf_bufferSize(cusolverH, n, k, Wd, n, &lwork_geqrf);
-		assert(statusH == CUSOLVER_STATUS_SUCCESS);
-		statusH = cusolverDnSorgqr_bufferSize(cusolverH, n, k, k, Wd, n, d_tau, &lwork_orgqr);
-		assert(statusH == CUSOLVER_STATUS_SUCCESS);
-		lwork = (lwork_geqrf < lwork_orgqr)? lwork_orgqr : lwork_geqrf;
-#ifdef DEBUG
-		printf("lwork=%d\n", lwork);
-#endif
-		gpuErrchk( cudaMalloc( &d_work, sizeof(float)*lwork ) );
+		{
+			float *Wt = new float[n*k];
+			matcpy( n, k, "ColMajor", Wt, n, "RowMajor", W, ldw );
+			float *Wd; 
+			gpuErrchk( cudaMalloc( &Wd, sizeof(float) * n * k) );
+			gpuErrchk( cudaMemcpy( Wd, Wt, sizeof(float)*n*k, cudaMemcpyHostToDevice) );
 
-		gpuErrchk( cudaMalloc( &d_info, sizeof(int )) );
-		statusH = cusolverDnSgeqrf(cusolverH, n, k, Wd, n, d_tau, d_work, lwork, d_info );
-		assert(statusH == CUSOLVER_STATUS_SUCCESS);
-		gpuErrchk( cudaDeviceSynchronize() );
-		statusH = cusolverDnSorgqr( cusolverH, n, k, k, Wd, n, d_tau, d_work, lwork, d_info );
-		assert(statusH == CUSOLVER_STATUS_SUCCESS);
-		cudaFree(d_work);
+			int lwork_geqrf = 0, lwork_orgqr = 0; 
+			statusH = cusolverDnSgeqrf_bufferSize(cusolverH, n, k, Wd, n, &lwork_geqrf);
+			assert(statusH == CUSOLVER_STATUS_SUCCESS);
+			statusH = cusolverDnSorgqr_bufferSize(cusolverH, n, k, k, Wd, n, d_tau, &lwork_orgqr);
+			assert(statusH == CUSOLVER_STATUS_SUCCESS);
+			lwork = (lwork_geqrf < lwork_orgqr)? lwork_orgqr : lwork_geqrf;
+			printf("lwork=%d\n", lwork);
+			gpuErrchk( cudaMalloc( &d_work, sizeof(float)*lwork ) );
+			gpuErrchk( cudaMalloc( &d_info, sizeof(int )) );
+			statusH = cusolverDnSgeqrf(cusolverH, n, k, Wd, n, d_tau, d_work, lwork, d_info );
+			assert(statusH == CUSOLVER_STATUS_SUCCESS);
+			gpuErrchk( cudaDeviceSynchronize() );
+			statusH = cusolverDnSorgqr( cusolverH, n, k, k, Wd, n, d_tau, d_work, lwork, d_info );
+			assert(statusH == CUSOLVER_STATUS_SUCCESS);
+			gpuErrchk( cudaMemcpy( Wt, Wd, sizeof(float)*n*k, cudaMemcpyDeviceToHost));
+			matcpy( n, k, "RowMajor", W, ldw, "ColMajor", Wt, n); 
+			cudaFree(d_work);			
+			delete[] Wt; 
+			cudaFree(Wd); 
+		}
+#if 0
+
 #endif	
 		// C= W'*K*W -> Q = K*W; C=W'*Q
 		/* Q=K*W */
 		//rbf_kermatmul(Zd, N, Yd, Wd, N, Qd, N, N, k, handle);
-		RBF_KERMATMUL(W, ldw, Q, ldq); 
+		RBF_KERMATMUL(W, ldw, Q, ldq, d); 
 
 
 
@@ -1553,22 +1542,22 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 		float *Qt = (float*) malloc( sizeof(float) * NN * k ); 
 
 		cudaMemset( Cd, 0, sizeof(float)*k*k ); // Cd=0
-		const int NN = ?; 
+		const int NN = 100000; 
 		for(int i=0; i<N; i+=NN) {
-			int ib = std::min(NN, N-i); 
+			int ib = min(NN, N-i); 
 			matcpy( ib, k, "ColMajor", Wt, ib, "RowMajor", &W[i*ldw], ldw);
 			matcpy( ib, k, "ColMajor", Qt, ib, "RowMajor", &Q[i*ldq], ldq); 
-			gpuErrchk( cudaMemcpy( Wd, Wt, sizeof(float)*ib*k ));
-			gpuErrchk( cudaMemcpy( Qd, Qt, sizeof(float)*ib*k ));
+			gpuErrchk( cudaMemcpy( Wd, Wt, sizeof(float)*ib*k, cudaMemcpyHostToDevice));
+			gpuErrchk( cudaMemcpy( Qd, Qt, sizeof(float)*ib*k, cudaMemcpyHostToDevice));
 			cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, k, k, ib, &done,
 						Wd, ib, Qd, ib, &dzero, Cd, k); 
 		}
 		cudaFree(Wd); cudaFree(Qd); 
 		free(Wt); free(Qt); 
-
+		gpuErrchk(cudaMemcpy( C, Cd, sizeof(float)*k*k, cudaMemcpyDeviceToHost ));
 	}	
 
-	gpuErrchk(cudaMemcpy( C, Cd, sizeof(float)*k*k, cudaMemcpyDeviceToHost ));
+	
 #ifdef DEBUG
 	FILE *f3 = fopen("C.csv","w");
 	for( int i=0; i<k; i++ ){
@@ -1618,11 +1607,12 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 		float *Wd, *Ud; 
 		gpuErrchk( cudaMalloc( &Wd, sizeof(float) * NN * k ) );
 		gpuErrchk( cudaMalloc( &Ud, sizeof(float) * NN * k ) );
-		const int NN = ?; 
+		const int NN = 100000; 
 		for (int i=0; i<N; i+=NN) {
-			int ib = std::min(NN, N-i); 
+			int ib = min(NN, N-i); 
 			matcpy(ib, k, "ColMajor", Wt, ib, "RowMajor", &W[i*ldw], ldw);
 			gpuErrchk( cudaMemcpy( Wd, Wt, sizeof(float) * ib * k, cudaMemcpyHostToDevice));
+			float sone = 1.0; 
 			cublasStrmm(handle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
 						CUBLAS_DIAG_NON_UNIT,
 						ib, k, &sone, Cd, k, Wd, ib, Ud, ib); 
