@@ -50,7 +50,7 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 #define END_TIMER \
 		clock_gettime(CLOCK_MONOTONIC, &end);	/* mark the end time */\
 		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;\
-		printf("elapsed time = %.3e seconds\n",  diff);\
+		printf("elapsed time = %.3f seconds\n",  diff);\
 		}
 
 
@@ -1508,7 +1508,7 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 			statusH = cusolverDnSorgqr_bufferSize(cusolverH, n, k, k, Wd, n, d_tau, &lwork_orgqr);
 			assert(statusH == CUSOLVER_STATUS_SUCCESS);
 			lwork = (lwork_geqrf < lwork_orgqr)? lwork_orgqr : lwork_geqrf;
-			printf("lwork=%d\n", lwork);
+			//printf("lwork=%d\n", lwork);
 			gpuErrchk( cudaMalloc( &d_work, sizeof(float)*lwork ) );
 			gpuErrchk( cudaMalloc( &d_info, sizeof(int )) );
 			statusH = cusolverDnSgeqrf(cusolverH, n, k, Wd, n, d_tau, d_work, lwork, d_info );
@@ -1579,27 +1579,47 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 	fclose(f3);
 #endif
 
-#ifdef DEBUG
+//#ifdef DEBUG
+	{
 	// spectral analysis of C (therefore the low rank apprixmation)
-	double *CC = (double*) malloc( sizeof(double)*k*k );
-	double *w = (double*) malloc( sizeof(double)*k ); // ews in ascending order
-	memcpy(CC, C, sizeof(double)*k*k);
-	LAPACKE_dsyevd( LAPACK_COL_MAJOR, 'N', 'L', k, CC, k, w);
-	printf("[LRA]: l_n=%.3e, l_1=%.3e\n", w[k-1], w[0]);
-	double l1 = w[k-1];
-	free(CC);
-	free(w);
-#endif
+		double *CC = (double*) malloc( sizeof(double)*k*k );
+		double *w = (double*) malloc( sizeof(double)*k ); // ews in ascending order
+
+		//memcpy(CC, C, sizeof(double)*k*k);
+		matcpy( k, k, "ColMajor", CC, k, "ColMajor", C, k);
+		LAPACKE_dsyevd( LAPACK_COL_MAJOR, 'N', 'L', k, CC, k, w);
+		int i; 
+		for (i=0; i<k; i++) {
+			if(w[i]/w[k-1]>1e-16)
+				break;
+		}
+		printf("i=%d \n");
+		printf("[LRA]: l_n=%.3e, l_i=%.3e, l_1=%.3e\n", w[k-1], w[i], w[0]);
+		if (i>0) printf("should change rank from %d to %d", k, k-i);
+		//k = k-i; 
+		double l1 = w[k-1];
+		free(CC);
+		free(w);
+	}
+//#endif
 
 	printf("C Cholesky factorize...");
 	{				
 		// C=L*L'
+		int info; 
+		gpuErrchk( cudaMalloc( &d_info, sizeof(int)));
 		statusH = cusolverDnSpotrf_bufferSize(cusolverH, CUBLAS_FILL_MODE_LOWER, k, Cd,k,  &lwork );
 		assert(statusH == CUSOLVER_STATUS_SUCCESS);
 		gpuErrchk( cudaMalloc( &d_work, sizeof(float)*lwork ) );
 		statusH = cusolverDnSpotrf(cusolverH, CUBLAS_FILL_MODE_LOWER, k, Cd ,k, d_work, lwork, d_info );
 		assert(statusH == CUSOLVER_STATUS_SUCCESS);
 		cudaFree( d_work );
+		gpuErrchk( cudaMemcpy( &info, d_info, sizeof(int), cudaMemcpyDeviceToHost) );
+		if (info!=0) {
+			printf("Cholesky fail; info=%d\n", info);
+			exit(1); 
+		}
+		cudaFree( d_info);
 	}
 	printf("done\n");
 
