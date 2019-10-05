@@ -71,8 +71,6 @@ int POS, NEG; // mapping between datafile class and +1, -1 rquired by SVM.
 // cublas state
 cudaError_t cudaStat;
 cublasStatus_t stat;
-
-// cusolverDnHandle_t cusolverH;
 cusolverStatus_t statusH = CUSOLVER_STATUS_SUCCESS;
 
 // libsvmread populates the next two main data structs.
