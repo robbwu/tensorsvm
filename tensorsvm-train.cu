@@ -1540,6 +1540,7 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 	//cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, k, k, N, &done, Wd, N, Qd, N, &dzero,
 	//			Cd, k);
 	printf("Compute C\n");
+#ifdef C_FP32
 	{
 
 		const int NN = 100000; 
@@ -1564,8 +1565,42 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 		cudaFree(Wd); cudaFree(Qd); 
 		free(Wt); free(Qt); 
 		gpuErrchk(cudaMemcpy( C, Cd, sizeof(float)*k*k, cudaMemcpyDeviceToHost ));
-	}	
+	}
+#else	// C FP64
+	{
 
+		const int NN = 100000; 
+		// use Cd; col-major
+		double *Wd, *Qd; 
+		gpuErrchk( cudaMalloc( &Wd, sizeof(double) * NN * k )); 
+		gpuErrchk( cudaMalloc( &Qd, sizeof(double) * NN * k )); 
+		double *Wt = (double*) malloc( sizeof(double) * NN * k );  
+		double *Qt = (double*) malloc( sizeof(double) * NN * k ); 
+
+		double *Cd64; 
+		cudaMalloc( &Cd64, sizeof(double)*k*k ); 
+		cudaMemset( Cd64, 0, sizeof(double)*k*k ); // Cd=0
+		
+		for(int i=0; i<N; i+=NN) {
+			int ib = min(NN, N-i); 
+			matcpy( ib, k, "ColMajor", Wt, ib, "RowMajor", &W[i*ldw], ldw);
+			matcpy( ib, k, "ColMajor", Qt, ib, "RowMajor", &Q[i*ldq], ldq); 
+			gpuErrchk( cudaMemcpy( Wd, Wt, sizeof(double)*ib*k, cudaMemcpyHostToDevice));
+			gpuErrchk( cudaMemcpy( Qd, Qt, sizeof(double)*ib*k, cudaMemcpyHostToDevice));
+			double done = 1, dzero = 0; 
+			cublasDgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, k, k, ib, &done,
+						Wd, ib, Qd, ib, &dzero, Cd64, k); 
+		}
+		cudaFree(Wd); cudaFree(Qd); 
+		free(Wt); free(Qt); 
+		double *CC = new double[k*k];
+		gpuErrchk(cudaMemcpy( CC, Cd64, sizeof(double)*k*k, cudaMemcpyDeviceToHost ));
+		matcpy( k, k, "ColMajor", C, k, "ColMajor", CC, k); 
+		gpuErrchk(cudaMemcpy( Cd, C, sizeof(float)*k*k, cudaMemcpyHostToDevice)); 
+		free(CC); 
+		cudaFree(Cd64);
+	}
+#endif
 	
 #ifdef DEBUG
 	FILE *f3 = fopen("C.csv","w");
@@ -1595,7 +1630,7 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 		}
 		printf("i=%d \n");
 		printf("[LRA]: l_n=%.3e, l_i=%.3e, l_1=%.3e\n", w[k-1], w[i], w[0]);
-		if (i>0) printf("should change rank from %d to %d", k, k-i);
+		if (i>0) printf("should change rank from %d to %d\n", k, k-i);
 		//k = k-i; 
 		double l1 = w[k-1];
 		free(CC);
@@ -1604,8 +1639,11 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 //#endif
 
 	printf("C Cholesky factorize...");
+START_TIMER
+#ifdef C_GPU
 	{				
-		// C=L*L'
+		printf(" on GPU ")
+		// C=L*L' on GPU
 		int info; 
 		gpuErrchk( cudaMalloc( &d_info, sizeof(int)));
 		statusH = cusolverDnSpotrf_bufferSize(cusolverH, CUBLAS_FILL_MODE_LOWER, k, Cd,k,  &lwork );
@@ -1621,17 +1659,33 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 		}
 		cudaFree( d_info);
 	}
-	printf("done\n");
+#else
+	{  // C=L*L' on CPU
+		printf(" on CPU "); 
+		float *CC = new float[k*k]; 
+		matcpy( k, k, "ColMajor", CC, k, "ColMajor", C, k);
 
-	/*
-	// U=W*L
-	float *Um;
-	float sone = 1; 
-	gpuErrchk( cudaMallocManaged( &Um, sizeof(float)*n*k ) );
-	cublasStrmm(handle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
-				CUBLAS_DIAG_NON_UNIT,
-				n, k, &sone,  Cd, k, Wd, n, Um, n );
-	*/
+		int info = LAPACKE_spotrf( LAPACK_COL_MAJOR, 'L', k, C, k ); 
+		if (info !=0 ) {
+			printf("CPU Cholesky fail; info =%d, attempting to guess numerical rank...\n", info); 
+
+			int *ipiv = new int[k];
+			int rank; 
+			int info = LAPACKE_spstrf( LAPACK_COL_MAJOR, 'L', k, CC, k, ipiv, &rank, 1e-7 );
+			printf("CPU Pivoted Cholesky: info=%d rank=%d (retry setting -k=%d or less)\n", info, rank, rank); 
+			exit(1);
+
+			delete[] ipiv; 
+
+		}
+		gpuErrchk( cudaMemcpy( Cd, C, sizeof(float)*k*k, cudaMemcpyHostToDevice ) );
+		delete[] CC; 
+
+	}
+#endif
+	printf("done\n");
+END_TIMER
+
 	// U = W*L; L is already stored in Cd on GPU. 
 	printf(" U=W*L  \n");
 	{
