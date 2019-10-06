@@ -1604,11 +1604,18 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 		double *CC = new double[k*k];
 		gpuErrchk(cudaMemcpy( CC, Cd64, sizeof(double)*k*k, cudaMemcpyDeviceToHost ));
 		matcpy( k, k, "ColMajor", C, k, "ColMajor", CC, k); 
+		// important step: make C symmetric. 
+		for (int i=0; i<k; i++) {
+			for (int j=0; j<i; j++) {
+				C[i+j*k] = 0.5*(C[i+j*k] + C[j+i*k]);
+			}
+		}
 		gpuErrchk(cudaMemcpy( Cd, C, sizeof(float)*k*k, cudaMemcpyHostToDevice)); 
 		free(CC); 
 		cudaFree(Cd64);
 	}
 #endif
+	// is C symmetric? 
 	
 #ifdef DEBUG
 	FILE *f3 = fopen("C.csv","w");
