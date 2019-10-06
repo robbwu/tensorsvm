@@ -596,7 +596,10 @@ void help_msg()
 		"-s : set the solver (default 0); only works when -t !=0\n"
 	    "     0 -- approx interior point method\n"
 	    "     1 -- projected gradient descent\n"
-		"     2 -- primal interior barrier method\n");
+		"     2 -- primal interior barrier method\n"
+		"-analysis : enable computing fnorm(K-U*U'), the error of low rank approximation\n"
+		"-N n_samples: only consider the first n_samples in training\n"
+	);
 }
 
 void parsecmd(int argc, char *argv[])
