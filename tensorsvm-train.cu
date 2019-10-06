@@ -81,6 +81,8 @@ long NN = 0; // first #number of instances
 long d = 0; // number of features
 lapack_int *IPIV;
 
+int flag_analysis = 0; 
+
 void parsecmd(int, char *[]);
 void help_msg();
 void libsvmread(char *filepath, float **labels, float **inst, long *n, long *nf);
@@ -94,9 +96,11 @@ void rbf_kermatmul(float *Zd1, int ldz1, float *Zd2, int ldz2, float *Yd1, float
 		float *Ad, int lda, float *Bd, int ldb,  int m, int n, int k,
 		cublasHandle_t handle);
 float gaussrand();
-__global__ void vecnorm(float *Zd, int ldz, float *ZI, int m, int k);
-__global__ void rbf_kergen( int m, int n, float *buf, int ldb, float *XI, float *XJ, float *XIJ, int ldxij,
-							float gamma, float *YI, float *YJ);
+template<typename FT>
+__global__ void vecnorm(FT *Zd, int ldz, FT *ZI, int m, int k);
+template<typename FT, typename FT2>
+__global__ void rbf_kergen( int m, int n, FT *buf, int ldb, FT *XI, FT *XJ, FT *XIJ, int ldxij,
+							FT2 gamma, FT *YI, FT *YJ);
 double LRA(float *Z, int ldz, double *U, int ldu, long n, long k);
 void pgd(double *Z, double *Y, double C, double *X, long n, long d, double l1);
 
@@ -624,6 +628,9 @@ void parsecmd(int argc, char *argv[])
 		} else if (strcmp(argv[i], "-s") == 0) {
 		    i++;
 			CMDPARA_S = atoi(argv[i]);
+		} else if (strcmp(argv[i], "-analysis") == 0) {
+			// no argument to this option
+			flag_analysis = 1; 
 		} else {
 			if (!modelfileflag) {
 				trainfilepath = argv[i];
@@ -1711,98 +1718,52 @@ END_TIMER
 	}
 	printf(" done. \n"); 
 	
-#ifdef DEBUG
-	void rbf_fnorm_res(float *Zd, int ldz, float *Yd, float *U, int ldu, int n, int k,
-					   float *fnorm, float *fnorm_res, cublasHandle_t handle);
-	double knorm = 0, kunorm = 0;
-	START_TIMER
-	rbf_fnorm_res(Zd, N, Yd, Um, n, n, k, &knorm,&kunorm,  handle);
-	printf("rbf_fnorm_res ");
-	END_TIMER
-	printf("fnorm(K)=%.3e fnorm(K-U*U=%.3e')\n", knorm, kunorm);
-#endif // DEBUG
 
-/*
-	// cublasDgeam(handle, CUBLAS_OP_T, CUBLAS_OP_T, k, n, &done,
-	// 			Um, n, &dzero, Um, n, Um,
-	// cudaDeviceSynchronize();
-	gpuErrchk(cudaMemcpy( W, Um, sizeof(float)*N*k, cudaMemcpyDeviceToHost ));
-	// gpuErrchk(cudaMemcpy( Zt, Um, sizeof(double)*N*k, cudaMemcpyDeviceToHost ));
-	cudaDeviceSynchronize();
-*/
-#ifdef DEBUG
-	printf("Um->W copy finished sizeof(long)=%d\n", sizeof(long));
-	printf("Sync done\n");
-#endif
-	// for( long j=0; j<k; j++ ) {
-	// 	for( long i=0; i<N; i++ ) {
-	// 		U[i*ldu+j] = W[i+j*N];
-	// 	}
-	// }
-#ifdef DEBUG
-	printf("copying U GPU->CPU finished\n");
-#endif
-	// cudaFree(Um);
-	// cudaFree(Qd);
-	// cudaFree(Yd);
-	// cudaFree(Wd);
-	// cudaFree(Zd);
+	if (flag_analysis) {
+		// WARNING: THis piece of code does not work with OOC. 
+		void rbf_fnorm_res(double *Zd, int ldz, double *Yd, double *U, int ldu, int n, int k,
+						   double *fnorm, double *fnorm_res, cublasHandle_t handle);
+
+		double *Zd, *Ud, *Yd;
+		double *Ut = new double[n*k]; 
+		double *Yt = new double[n];
+		double *Zt = new double[n*d];
+		START_TIMER
+
+		matcpy( n, d, "ColMajor", Zt, n, "RowMajor", Z, ldz );
+		matcpy( n, k, "ColMajor", Ut, n, "RowMajor", U, ldu );	
+		matcpy( n, 1, "ColMajor", Yt, n, "RowMajor", LABELS, 1 );	
+
+		gpuErrchk( cudaMalloc( &Zd, sizeof(double)*n*d ));
+		gpuErrchk( cudaMalloc( &Ud, sizeof(double)*n*k ));
+		gpuErrchk( cudaMalloc( &Yd, sizeof(double)*n ));	
+		gpuErrchk( cudaMemcpy( Zd, Zt, sizeof(double)*n*d, cudaMemcpyHostToDevice ));			
+		gpuErrchk( cudaMemcpy( Ud, Ut, sizeof(double)*n*k, cudaMemcpyHostToDevice ));			
+		gpuErrchk( cudaMemcpy( Yd, Yt, sizeof(double)*n*1, cudaMemcpyHostToDevice ));	
+
+		double knorm = 0, kunorm = 0;						
+		rbf_fnorm_res(Zd, N, Yd, Ud, n, n, k, &knorm,&kunorm,  handle);
+		printf("fnorm(K)=%.3e fnorm(K-U*U=%.3e')\n", knorm, kunorm);
+		printf("rbf_fnorm_res ");
+		END_TIMER
+
+		
+
+		delete[] Ut; delete[] Yt; delete[] Zt; 
+		cudaFree(Ud); cudaFree(Yd); cudaFree(Zd); 
+	}
+
+
 	cudaFree(Cd);
 	cudaFree(d_tau);
 	free(Q);
-	// free(Zt);
 	free(W);
-	// free(C);
-	// cudaFree(Td);
+	free(C);
+
 	cublasDestroy(handle);
 	cusolverDnDestroy(cusolverH);
-#ifdef DEBUG
-	printf("freeing memory finished\n");
-#endif
 	//return l1;
 	return 0;
-	/*
-	if (N<=10 && k<=10) {
-		printf("printing the kernel matrix %d\n", __LINE__);
-		for( int i=0; i<N; i++ ) {
-			for( int j=0; j<k; j++ ) {
-				printf("%.6f ", W[i+j*N]);
-			}
-			printf("\n");
-		}
-	} else {
-		FILE *f = fopen("GQ.csv", "w");
-		FILE *f2 = fopen("Q.csv", "w");
-		FILE *f3 = fopen("C.csv", "w");
-		FILE *f4 = fopen("U.csv", "w");
-		for( int i=0; i<N; i++ ) {
-			for( int j=0; j<k; j++ ) {
-				fprintf(f, "%.6f", W[i+j*N]);
-				if( j<k-1 ) fprintf(f,",");
-				else		fprintf(f, "\n");
-				fprintf(f2, "%.6f", Q[i+j*N]);
-				if( j<k-1 ) fprintf(f2,",");
-				else		fprintf(f2, "\n");
-				fprintf(f4, "%.6f", Um[i+j*N]);
-				if( j<k-1 ) fprintf(f4,",");
-				else		fprintf(f4, "\n");
-			}
-
-		}
-		printf("printing C: %d C[0,0]=%.6e\n", k, C[0]);
-		for( int i=0; i<k; i++) {
-			for( int j=0; j<k; j++) {
-				fprintf(f3, "%.6f", C[i+j*k]);
-
-				if( j<k-1 ) fprintf(f3,",");
-				else		fprintf(f3, "\n");
-			}
-		}
-				
-		fclose(f);
-		fclose(f2);
-		fclose(f3);
-		}*/
 }
 		
 
@@ -1816,7 +1777,7 @@ struct square
 };
 // residual f-norm of the LRA result:
 // fnorm(K - U*U')/fnorm(K);
-#ifdef DEBUG
+
 void rbf_fnorm_res(double *Zd, int ldz, double *Yd, double *Ud, int ldu, int n, int k,
 				   double *fnorm, double *fnorm_res, cublasHandle_t handle)
 {
@@ -1897,7 +1858,7 @@ void rbf_fnorm_res(double *Zd, int ldz, double *Yd, double *Ud, int ldu, int n, 
 	cudaDeviceSynchronize();	
 
 }
-#endif
+
 
 // compute kernel matrix-matrix multiplication:
 // B += Y*K(Z)*Y'*A;
@@ -1972,12 +1933,13 @@ void rbf_kermatmul(float *Zd1, int ldz1, float *Zd2, int ldz2, float *Yd1, float
 	cudaDeviceSynchronize();
 }
 
+template<typename FloatType>
 __global__ void
-vecnorm(float *Zd, int ldz, float *ZI, int m, int k)
+vecnorm(FloatType *Zd, int ldz, FloatType *ZI, int m, int k)
 {
 	int i=blockIdx.x*blockDim.x + threadIdx.x;
 	if( i<m ) {
-		float sum = 0;
+		FloatType sum = 0;
 #pragma unroll (4)
 		for( int j=0; j<k; j++ )
 			sum += Zd[i+j*ldz]*Zd[i+j*ldz];
@@ -2000,10 +1962,11 @@ fnorm( int m, int n, double *buf, int B, double *XI, double *XJ, double *XIJ, in
 // with LDA m.
 // XIJ/buf are column major.
 // could be improved by assigning more work to each thread.
+template<typename FloatType, typename GammaType>
 __global__
-void rbf_kergen( int m, int n, float *buf, int ldb,
-				 float *XI, float *XJ, float *XIJ, int ldxij,
-				 float gamma, float *YI, float *YJ)
+void rbf_kergen( int m, int n, FloatType *buf, int ldb,
+				 FloatType *XI, FloatType *XJ, FloatType *XIJ, int ldxij,
+				 GammaType gamma, FloatType *YI, FloatType *YJ)
 {
 	int i=blockIdx.x*blockDim.x + threadIdx.x;
 	int j=blockIdx.y*blockDim.y + threadIdx.y;
