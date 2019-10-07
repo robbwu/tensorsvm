@@ -332,6 +332,10 @@ double writemodel(char *path, double *X,  double C, double *U)
 	}
 
 	FILE *f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "can't open file to write: %s\n", path);
+        exit(1);
+    }
 	fprintf(f,"svm_type c_svc\n");
 	if( T== 0 )
 		fprintf(f,"kernel_type linear\n");
@@ -638,6 +642,10 @@ void libsvmread(char *file, double **labels, double **inst, long *n, long *nf)
 {
 	// 1st pass: determine N, d, class
 	FILE *f = fopen(file, "r");
+    if (!f) {
+        fprintf(stderr, "Can't open file %s\n", file);
+        exit(1);
+    }
 
 	char line[BUF_SIZE];
 	char *endptr;
