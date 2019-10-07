@@ -83,6 +83,7 @@ lapack_int *IPIV;
 
 int flag_analysis = 0; 
 
+
 void parsecmd(int, char *[]);
 void help_msg();
 void libsvmread(char *filepath, float **labels, float **inst, long *n, long *nf);
@@ -1402,6 +1403,7 @@ void testKerMat(double *Z)
 // matrix approxmation.
 double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 {
+	const int NN = 100000; // block size for out of core processing
 	k = K;
 	cublasHandle_t handle;
 	if (cublasCreate(&handle) != CUBLAS_STATUS_SUCCESS) {
@@ -1435,7 +1437,7 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 	float *d_work, *d_tau;
 	int *d_info;
 	float  *Cd;
-	float done = 1.0, dzero=0;
+
 	gpuErrchk( cudaMalloc( &Cd, sizeof(float)*k*k) );
 	gpuErrchk( cudaMalloc( &d_tau, sizeof(float)*k ) );
 
@@ -1449,7 +1451,7 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 		//int d = d; 
 		auto RBF_KERMATMUL = [k,Z,ldz, handle](float *Q, int ldq, float *W, int ldw, int d)
 		{ 
-			const int NN = 100000;
+			printf(" in %d chunks ", (N+NN-1)/NN); 
 			float *Z1t = (float*) malloc( sizeof(float) * NN * d );
 			float *Z2t = (float*) malloc( sizeof(float) * NN * d );
 			float *Qt  = (float*) malloc( sizeof(float) * NN * k );
@@ -1547,11 +1549,9 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 	/* C=W'*Q */
 	//cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, k, k, N, &done, Wd, N, Qd, N, &dzero,
 	//			Cd, k);
-	printf("Compute C\n");
+	printf("Compute C ");
 #ifdef C_FP32
 	{
-
-		const int NN = 100000; 
 		// use Cd; col-major
 		float *Wd, *Qd; 
 		gpuErrchk( cudaMalloc( &Wd, sizeof(float) * NN * k )); 
@@ -1570,14 +1570,13 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 			cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, k, k, ib, &done,
 						Wd, ib, Qd, ib, &dzero, Cd, k); 
 		}
+		// need to make C symmetric! 
 		cudaFree(Wd); cudaFree(Qd); 
 		free(Wt); free(Qt); 
 		gpuErrchk(cudaMemcpy( C, Cd, sizeof(float)*k*k, cudaMemcpyDeviceToHost ));
 	}
-#else	// C FP64
+#else	// C FP64, C = W'*Q
 	{
-
-		const int NN = 100000; 
 		// use Cd; col-major
 		double *Wd, *Qd; 
 		gpuErrchk( cudaMalloc( &Wd, sizeof(double) * NN * k )); 
@@ -1589,13 +1588,14 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 		cudaMalloc( &Cd64, sizeof(double)*k*k ); 
 		cudaMemset( Cd64, 0, sizeof(double)*k*k ); // Cd=0
 		
+		printf(" in %d chunks", (N+NN-1)/NN); 
 		for(int i=0; i<N; i+=NN) {
 			int ib = min(NN, N-i); 
 			matcpy( ib, k, "ColMajor", Wt, ib, "RowMajor", &W[i*ldw], ldw);
 			matcpy( ib, k, "ColMajor", Qt, ib, "RowMajor", &Q[i*ldq], ldq); 
 			gpuErrchk( cudaMemcpy( Wd, Wt, sizeof(double)*ib*k, cudaMemcpyHostToDevice));
 			gpuErrchk( cudaMemcpy( Qd, Qt, sizeof(double)*ib*k, cudaMemcpyHostToDevice));
-			double done = 1, dzero = 0; 
+			double done = 1; 
 			cublasDgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, k, k, ib, &done,
 						Wd, ib, Qd, ib, &dzero, Cd64, k); 
 		}
@@ -1615,6 +1615,7 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 		cudaFree(Cd64);
 	}
 #endif
+	printf (" done \n"); 
 	// is C symmetric? 
 	
 #ifdef DEBUG
@@ -1704,7 +1705,6 @@ END_TIMER
 	// U = W*L; L is already stored in Cd on GPU. 
 	printf(" U=W*L  \n");
 	{
-		const int NN = 100000; 
 		float *Wt = (float*) malloc( sizeof(float) * NN * k );
 		float *Ut = (float*) malloc( sizeof(float) * NN * k );
 		float *Wd, *Ud; 
