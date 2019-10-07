@@ -717,7 +717,7 @@ void CAQR(float *Q, int m, int n, int lda, int em, int k)
 	gpuErrchk(cudaMalloc(&pr, sizeof(float)*k*k));
 	QR(rr, nb*k, nb*k, k, pr, k, csHandle, stream, 1);
 	cudaStreamSynchronize(stream);
-	printmatrixDevice("qr.csv", pr, k, k, k);
+	//printmatrixDevice("qr.csv", pr, k, k, k);
 	nr = 0;
 
 	transpose(rr, nb*k, k, nb*k, cbHandle, stream);
@@ -755,7 +755,7 @@ void CAQR(float *Q, int m, int n, int lda, int em, int k)
 		cudaMemcpyAsync(Q + i, b0, em*k * sizeof(float), cudaMemcpyDeviceToHost, stream);
 	}
 	cudaStreamSynchronize(stream);
-	printmatrixdd("Q.csv", m, n, Q, n);
+	//printmatrixdd("Q.csv", m, n, Q, n);
 	clock_gettime(CLOCK_MONOTONIC, &end);
 	diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec) / BILLION;
 	//printf("MPC elapsed time = %.6f seconds\n", diff);
@@ -787,7 +787,7 @@ void ortho(float *W, int n, int k)
 {
 	int em = getem(n, k);
 	printf("block size is %d\n", em);
-	printmatrixdd("A.csv", n, k, W, k);
+	//printmatrixdd("A.csv", n, k, W, k);
 	CAQR(W, n, k, k, em, k);
 	printf("-----------------------Ortho done!\n");
 }
