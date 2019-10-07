@@ -369,6 +369,429 @@ double writemodel(char *path, double *X,  double C, double *U)
 	free(iSV); free(iBSV);
 	return b;
 }
+void printmatrixd(char *filename, int m, int n, float* a, int lda)
+{
+
+	FILE *f = fopen(filename, "w");
+	if (f == NULL) {
+		printf("fault!\n");
+		return;
+	}
+	for (int i = 0; i < m; i++) {
+		//printf("i = %d\n", i);
+		for (int j = 0; j < n; j++) {
+			fprintf(f, "%.6f", a[i + j*lda]);
+			if (j == n - 1) fprintf(f, "\n");
+			else fprintf(f, ",");
+		}
+	}
+
+
+	fclose(f);
+}
+
+void printmatrixdd(char *filename, int m, int n, float* a, int lda)
+{
+
+	FILE *f = fopen(filename, "w");
+	if (f == NULL) {
+		printf("fault!\n");
+		return;
+	}
+	for (int i = 0; i < m; i++) {
+		//printf("i = %d\n", i);
+		for (int j = 0; j < n; j++) {
+			fprintf(f, "%.6f", a[i *lda + j]);
+			if (j == n - 1) fprintf(f, "\n");
+			else fprintf(f, ",");
+		}
+	}
+
+
+	fclose(f);
+}
+
+
+__global__
+void  getR(int m, int n, float *da, int lda, float *dr, int ldr)
+{
+	int i = threadIdx.x + blockDim.x * blockIdx.x;
+	int j = threadIdx.y + blockDim.y * blockIdx.y;
+	if (i < m&&j < n)
+	{
+		if (i <= j)
+		{
+			dr[i + j*ldr] = da[i + j*lda];
+		}
+	}
+}
+
+__global__
+void myslacpyd(int m, int n, double *da, int lda, double *db, int ldb)
+{
+	int i = threadIdx.x + blockDim.x * blockIdx.x;
+	int j = threadIdx.y + blockDim.y * blockIdx.y;
+	if (i < m && j < n) {
+		db[i + j*ldb] = da[i + j*lda];
+	}
+}
+
+
+__global__
+void clear_trid(char uplo, int m, int n, double *a, int lda)
+{
+	int i = threadIdx.x + blockDim.x * blockIdx.x;
+	int j = threadIdx.y + blockDim.y * blockIdx.y;
+	if (i < m && j < n) {
+		if (uplo == 'l') {
+			if (i > j) {
+				a[i + j*lda] = 0;
+			}
+		}
+		else {
+			printf("clear_tri: option %c not implemented. \n", uplo);
+			assert(0);
+		}
+	}
+}
+
+
+void printmatrixDevice(char *filename, float *dA, int lda, int m, int n)
+{
+	float ha[m*n];
+	cudaMemcpy(ha, dA, sizeof(float)*m*n, cudaMemcpyDeviceToHost);
+	printmatrixd(filename, m, n, ha, lda);
+}
+
+//transpose a Matrix
+void transpose(float *dA, int lda, int m, int n, cublasHandle_t handle, cudaStream_t stream)
+{
+	float *dC;
+	gpuErrchk(cudaMalloc(&dC, sizeof(float)*m*n));
+	float alpha = 1.0;
+	float beta = 0.0;
+	cublasSgeam(handle,
+		CUBLAS_OP_T, CUBLAS_OP_T,
+		m, n,
+		&alpha,
+		dA, lda,
+		&beta,
+		dA, lda,
+		dC, m);
+	cudaMemcpyAsync(dA, dC, m * n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+	cudaFree(dC);
+}
+
+//dA is overwrite by Q, dR is overwrite by R
+void QnR(float *dA, int lda, int m, int n, cusolverDnHandle_t cusolverH, cudaStream_t stream)
+{
+	float *d_tau = NULL;
+	int *devInfo = NULL;
+	float *d_work = NULL;
+	int lwork_geqrf = 0;
+	int lwork_orgqr = 0;
+	int lwork = 0;
+
+	//int info_gpu = 0;
+
+
+	//const double h_one = 1;
+	//const double h_minus_one = -1;
+
+
+	cudaMalloc(&d_tau, sizeof(float)*n);
+	cudaMalloc((void**)&devInfo, sizeof(int));
+
+	cusolverDnSgeqrf_bufferSize(
+		cusolverH,
+		m,
+		n,
+		dA,
+		lda,
+		&lwork_geqrf);
+
+	cusolverDnSorgqr_bufferSize(
+		cusolverH,
+		m,
+		n,
+		n,
+		dA,
+		lda,
+		d_tau,
+		&lwork_orgqr);
+
+
+	lwork = (lwork_geqrf > lwork_orgqr) ? lwork_geqrf : lwork_orgqr;
+	cudaMalloc(&d_work, sizeof(int)*lwork);
+
+	cusolverDnSgeqrf(
+		cusolverH,
+		m,
+		n,
+		dA,
+		lda,
+		d_tau,
+		d_work,
+		lwork,
+		devInfo);
+
+
+	cusolverDnSorgqr(
+		cusolverH,
+		m,
+		n,
+		n,
+		dA,
+		lda,
+		d_tau,
+		d_work,
+		lwork,
+		devInfo);
+	return;
+}
+
+//dA is overwrite by Q, dR is overwrite by R
+void QR(float *dA, int lda, int m, int n, float *dR, int ldr, cusolverDnHandle_t cusolverH, cudaStream_t stream, int flag)
+{
+	/*
+	if(flag == 0)
+	printmatrixDevice("realA0.csv", dA, lda, m, n);*/
+	float *d_tau = NULL;
+	int *devInfo = NULL;
+	float *d_work = NULL;
+
+	int lwork_geqrf = 0;
+	int lwork_orgqr = 0;
+	int lwork = 0;
+
+	//int info_gpu = 0;
+
+
+	//const double h_one = 1;
+	//const double h_minus_one = -1;
+
+
+	cudaMalloc(&d_tau, sizeof(float)*n);
+	cudaMalloc((void**)&devInfo, sizeof(int));
+
+	cusolverDnSgeqrf_bufferSize(
+		cusolverH,
+		m,
+		n,
+		dA,
+		lda,
+		&lwork_geqrf);
+
+	cusolverDnSorgqr_bufferSize(
+		cusolverH,
+		m,
+		n,
+		n,
+		dA,
+		lda,
+		d_tau,
+		&lwork_orgqr);
+
+	lwork = (lwork_geqrf > lwork_orgqr) ? lwork_geqrf : lwork_orgqr;
+	cudaMalloc(&d_work, sizeof(int)*lwork);
+
+	cusolverDnSgeqrf(
+		cusolverH,
+		m,
+		n,
+		dA,
+		lda,
+		d_tau,
+		d_work,
+		lwork,
+		devInfo);
+
+
+	//copy R from A and clear tri
+	dim3 grid((n + 31) / 32, (n + 31) / 32);
+	dim3 block(32, 32);
+	/*
+	myslacpyd << <grid, block,0,stream >> > (n, n, dA, lda, dR, ldr);
+	clear_trid << <grid, block,0,stream >> > ('l', n, n, dR, ldr);*/
+	/*
+	if(flag == 0)
+	printmatrixDevice("realA.csv", dA, lda, m, n);*/
+	getR << <grid, block, 0, stream >> > (m, n, dA, lda, dR, ldr);
+	cudaStreamSynchronize(stream);
+	/*
+	printf("lda = %d ldr = %d\n", lda, ldr);
+	if(flag == 0)
+	printmatrixDevice("realR.csv", dR, ldr, ldr, n);*/
+
+	cusolverDnSorgqr(
+		cusolverH,
+		m,
+		n,
+		n,
+		dA,
+		lda,
+		d_tau,
+		d_work,
+		lwork,
+		devInfo);
+	cudaFree(d_tau);
+	cudaFree(d_work);
+	return;
+}
+
+
+
+void CAQR(float *Q, int m, int n, int lda, int em, int k)
+{
+	struct timespec start, end;
+	float diff;
+	clock_gettime(CLOCK_MONOTONIC, &start);
+	int nb = m % em == 0 ? m / em : m / em + 1;//how many blocks
+
+	float *b0, *b1;
+	gpuErrchk(cudaMalloc(&b0, sizeof(float)*em*k));
+	gpuErrchk(cudaMalloc(&b1, sizeof(float)*em*k));
+
+	cusolverDnHandle_t csHandle;
+	cusolverDnCreate(&csHandle);
+	cublasHandle_t cbHandle;
+	cublasCreate(&cbHandle);
+
+	cudaStream_t stream;
+	cudaStreamCreate(&stream);
+
+	//cudaHostAlloc(&Q, m * n * sizeof(double), cudaHostAllocDefault);//fix the memory of Q on CPU
+	//printmatrixd("Q00.csv", m, n, Q, lda);
+	float *rr;//store the stack of R on GPU
+
+	gpuErrchk(cudaMalloc(&rr, sizeof(float)*nb*k*k));
+
+	//set stream to handle 
+	cublasSetStream(cbHandle, stream);
+	cusolverDnSetStream(csHandle, stream);
+
+	int nr = 0;//nr-th R
+
+	for (int i = 0; i < m*n; i += em*k)
+	{
+		printf("%d-th block\n", i);
+		//need to be transpose
+		cudaMemcpyAsync(b0, Q + i, em * k * sizeof(float), cudaMemcpyHostToDevice, stream);
+
+		//printmatrixd("Q0.csv", m, n, Q, lda);
+		//if (i == 0)
+		//	printmatrixDevice("b00.csv", b0, em, em, k);
+		//else
+		//	printmatrixDevice("b11.csv", b0, em, em, k);
+		transpose(b0, k, em, k, cbHandle, stream);
+		//cudaStreamSynchronize(stream);
+		cudaStreamSynchronize(stream);
+		//if(i==0)
+		//	printmatrixDevice("b0.csv", b0, em, em, k);
+		//else
+		//	printmatrixDevice("b1.csv", b0, em, em, k);
+		cudaMemcpyAsync(b1, b0, em * k * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+		QR(b1, em, em, k, rr + nr, k, csHandle, stream, i);
+		cudaStreamSynchronize(stream);
+		/*
+		if (i == 0)
+		{
+		printmatrixDevice("q11.csv", b1, em, em, k);
+		printmatrixDevice("r11.csv", rr+nr, k, k, k);
+		}
+		else
+		{
+		printmatrixDevice("q12.csv", b1, em, em, k);
+		printmatrixDevice("r12.csv", rr+nr, k, k, k);
+		}*/
+		transpose(rr + nr, k, k, k, cbHandle, stream);
+		nr += k*k;
+		cudaMemcpyAsync(Q + i, b1, em*k * sizeof(float), cudaMemcpyDeviceToHost, stream);
+	}
+	transpose(rr, k, nb*k, k, cbHandle, stream);
+	cudaStreamSynchronize(stream);
+	//printmatrixDevice("dRb.csv", rr, nb*k, nb*k, k);
+	//QnR(rr, nb*k, nb*k, k, csHandle, stream);
+	float *pr;
+
+	gpuErrchk(cudaMalloc(&pr, sizeof(float)*k*k));
+	QR(rr, nb*k, nb*k, k, pr, k, csHandle, stream, 1);
+	cudaStreamSynchronize(stream);
+	//printmatrixDevice("qr.csv", pr, k, k, k);
+	nr = 0;
+
+	transpose(rr, nb*k, k, nb*k, cbHandle, stream);
+
+	for (int i = 0; i < m*n; i += em*k)
+	{
+		printf("%d-th gemm\n", i);
+		cudaMemcpyAsync(b0, Q + i, em*k * sizeof(float), cudaMemcpyHostToDevice, stream);
+		cudaMemcpyAsync(b1, b0, em * k * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+		float alpha = 1.0;
+		float beta = 0.0;
+
+
+		transpose(rr + nr, k, k, k, cbHandle, stream);
+		cudaStreamSynchronize(stream);
+		cublasSgemm(cbHandle,
+			CUBLAS_OP_N, CUBLAS_OP_N,
+			em, k, k,
+			&alpha,
+			b1, em,
+			rr + nr, k,
+			&beta,
+			b0, em);
+
+		nr += k*k;
+		/*if (i == 0)
+		{
+		printmatrixDevice("z11.csv", b0, em, em, k);
+		}
+		else
+		{
+		printmatrixDevice("z12.csv", b0, em, em, k);
+		}*/
+		transpose(b0, em, k, em, cbHandle, stream);
+		cudaMemcpyAsync(Q + i, b0, em*k * sizeof(float), cudaMemcpyDeviceToHost, stream);
+	}
+	cudaStreamSynchronize(stream);
+	//printmatrixdd("Q.csv", m, n, Q, n);
+	clock_gettime(CLOCK_MONOTONIC, &end);
+	diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec) / BILLION;
+	//printf("MPC elapsed time = %.6f seconds\n", diff);
+	cudaFree(b0);
+	cudaFree(b1);
+	cudaFree(pr);
+	cudaFree(rr);
+}
+
+int getem(int m, int n)
+{
+
+	if (1.0*m / 1000.0*n / 1000.0 * 4 / 1000.0 < 2)
+		return m;
+	for (int i = 2; i <= 100; i++)
+	{
+		if (m % i == 0)
+		{
+			m = m / i;
+			if (1.0*m / 1000.0*n / 1000.0 * 4 / 1000.0 < 2)
+				return m;
+			i--;
+		}
+	}
+	return m;
+}
+
+void ortho(float *W, int n, int k)
+{
+	int em = getem(n, k);
+	printf("block size is %d\n", em);
+	//printmatrixdd("A.csv", n, k, W, k);
+	CAQR(W, n, k, k, em, k);
+	printf("-----------------------Ortho done!\n");
+}
+
 int main(int argc, char *argv[])
 {
 	// stat = cublasCreate(&handle);
@@ -1134,23 +1557,24 @@ void mpc(double *Z, double *a, double C, double *X, double *Xi, int N, int d)
 		// writematrix("zscaled.csv", Zdscaled, N, d, d);
 		clock_gettime(CLOCK_MONOTONIC, &start);	/* mark start time */
 		{	// M = Zdscaled' * Zdscaled
-			cblas_dsyrk(CblasRowMajor, CblasLower, CblasTrans, d, N, 1.0, Zdscaled, d, 0, M, d);
-			
-			// cudaMemset( Md, 0, sizeof(double) * d * d );
-		
-			// for(int i=0; i<N; i+=NN) {
-			// 	ib = min(NN, N-i); 
-				
-			// 	matcpy( ib, d, "ColMajor", Zt, ib, "RowMajor", &Zdscaled[i*d], d );
-			// 	gpuErrchk( cudaMemcpyAsync( Zd, Zt, sizeof(double)*min(NN,N)*d, cudaMemcpyHostToDevice )); 
-			// 	gpuErrchk( cudaMemcpy( Zd, Zt, sizeof(double)*ib*d, cudaMemcpyHostToDevice )); 
-			// 	double done = 1.0; 
-			// 	cublasDsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_T, d, ib, &done,
-			// 				Zd, ib, &done, Md, d);
+            if ( 1.0*N*d*8 <= 4e9 ) {
+                cblas_dsyrk(CblasRowMajor, CblasLower, CblasTrans, d, N, 1.0, Zdscaled, d, 0, M, d);
+            } else {
+                cudaMemset( Md, 0, sizeof(double) * d * d );
 
-			// }
-			// gpuErrchk( cudaMemcpy( Mt, Md, sizeof(double)*d*d, cudaMemcpyDeviceToHost));
-			// matcpy(d,d,"RowMajor", M, d, "ColMajor", Mt, d);
+                for(int i=0; i<N; i+=NN) {
+                    int ib = min(NN, N-i); 
+
+                    matcpy( ib, d, "ColMajor", Zt, ib, "RowMajor", &Zdscaled[i*d], d );
+                    gpuErrchk( cudaMemcpy( Zd, Zt, sizeof(double)*ib*d, cudaMemcpyHostToDevice )); 
+                    double done = 1.0; 
+                    cublasDsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_T, d, ib, &done,
+                            Zd, ib, &done, Md, d);
+
+                }
+                gpuErrchk( cudaMemcpy( Mt, Md, sizeof(double)*d*d, cudaMemcpyDeviceToHost));
+                matcpy(d,d,"RowMajor", M, d, "ColMajor", Mt, d);
+            }
 		}
 		clock_gettime(CLOCK_MONOTONIC, &end);	/* mark the end time */
 		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;
@@ -1441,10 +1865,12 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 	gpuErrchk( cudaMalloc( &Cd, sizeof(float)*k*k) );
 	gpuErrchk( cudaMalloc( &d_tau, sizeof(float)*k ) );
 
+
 	float *C = (float*) malloc( sizeof(float)*k*k );	// row-major
 
 
 	for(int pr=0; pr<1; pr++) {
+
 
 		//rbf_kermatmul(Zd, N, Yd, Qd, N, Wd, N, N, k, handle);
 		// W = K*Q, on CPU. W,K,Q are all row-major
@@ -1501,38 +1927,15 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 		RBF_KERMATMUL(Q, ldq, W, ldw, d); 
 		END_TIMER
 
-		// W = Ortho(W)
-		//void ortho(float *, int, int);
-		auto ortho = [](float *W, int n, int k){};
+			// W = Ortho(W)
+			//void ortho(float *, int, int);
+			//auto ortho = [](float *W, int n, int k){};
+		printf("Ortho ");
+		START_TIMER
 		ortho(W, n, k); // W is row-major
-		{
-			float *Wt = new float[n*k];
-			matcpy( n, k, "ColMajor", Wt, n, "RowMajor", W, ldw );
-			float *Wd; 
-			gpuErrchk( cudaMalloc( &Wd, sizeof(float) * n * k) );
-			gpuErrchk( cudaMemcpy( Wd, Wt, sizeof(float)*n*k, cudaMemcpyHostToDevice) );
+		END_TIMER
+		
 
-			int lwork_geqrf = 0, lwork_orgqr = 0; 
-			statusH = cusolverDnSgeqrf_bufferSize(cusolverH, n, k, Wd, n, &lwork_geqrf);
-			assert(statusH == CUSOLVER_STATUS_SUCCESS);
-			statusH = cusolverDnSorgqr_bufferSize(cusolverH, n, k, k, Wd, n, d_tau, &lwork_orgqr);
-			assert(statusH == CUSOLVER_STATUS_SUCCESS);
-			lwork = (lwork_geqrf < lwork_orgqr)? lwork_orgqr : lwork_geqrf;
-			//printf("lwork=%d\n", lwork);
-			gpuErrchk( cudaMalloc( &d_work, sizeof(float)*lwork ) );
-			gpuErrchk( cudaMalloc( &d_info, sizeof(int )) );
-			statusH = cusolverDnSgeqrf(cusolverH, n, k, Wd, n, d_tau, d_work, lwork, d_info );
-			assert(statusH == CUSOLVER_STATUS_SUCCESS);
-			gpuErrchk( cudaDeviceSynchronize() );
-			statusH = cusolverDnSorgqr( cusolverH, n, k, k, Wd, n, d_tau, d_work, lwork, d_info );
-			assert(statusH == CUSOLVER_STATUS_SUCCESS);
-			gpuErrchk( cudaMemcpy( Wt, Wd, sizeof(float)*n*k, cudaMemcpyDeviceToHost));
-			matcpy( n, k, "RowMajor", W, ldw, "ColMajor", Wt, n); 
-			gpuErrchk( cudaFree(d_work) );			
-			delete[] Wt; 
-			gpuErrchk( cudaFree(Wd) ); 
-			printf("ortho done\n");
-		}
 
 		// C= W'*K*W -> Q = K*W; C=W'*Q
 		/* Q=K*W */
@@ -1695,7 +2098,6 @@ START_TIMER
 			gpuErrchk(cudaFree(Xd));
 		}
 		printf(" done. "); 
-
 
 		double l1 = w[k-1];
 		free(CC);
