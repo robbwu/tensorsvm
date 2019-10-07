@@ -1865,10 +1865,12 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 	gpuErrchk( cudaMalloc( &Cd, sizeof(float)*k*k) );
 	gpuErrchk( cudaMalloc( &d_tau, sizeof(float)*k ) );
 
+
 	float *C = (float*) malloc( sizeof(float)*k*k );	// row-major
 
 
 	for(int pr=0; pr<1; pr++) {
+
 
 		//rbf_kermatmul(Zd, N, Yd, Qd, N, Wd, N, N, k, handle);
 		// W = K*Q, on CPU. W,K,Q are all row-major
@@ -1928,39 +1930,12 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 			// W = Ortho(W)
 			//void ortho(float *, int, int);
 			//auto ortho = [](float *W, int n, int k){};
-			printf("Ortho ");
+		printf("Ortho ");
 		START_TIMER
 		ortho(W, n, k); // W is row-major
 		END_TIMER
-		/*
-		{
-			float *Wt = new float[n*k];
-			matcpy( n, k, "ColMajor", Wt, n, "RowMajor", W, ldw );
-			float *Wd; 
-			gpuErrchk( cudaMalloc( &Wd, sizeof(float) * n * k) );
-			gpuErrchk( cudaMemcpy( Wd, Wt, sizeof(float)*n*k, cudaMemcpyHostToDevice) );
+		
 
-			int lwork_geqrf = 0, lwork_orgqr = 0; 
-			statusH = cusolverDnSgeqrf_bufferSize(cusolverH, n, k, Wd, n, &lwork_geqrf);
-			assert(statusH == CUSOLVER_STATUS_SUCCESS);
-			statusH = cusolverDnSorgqr_bufferSize(cusolverH, n, k, k, Wd, n, d_tau, &lwork_orgqr);
-			assert(statusH == CUSOLVER_STATUS_SUCCESS);
-			lwork = (lwork_geqrf < lwork_orgqr)? lwork_orgqr : lwork_geqrf;
-			//printf("lwork=%d\n", lwork);
-			gpuErrchk( cudaMalloc( &d_work, sizeof(float)*lwork ) );
-			gpuErrchk( cudaMalloc( &d_info, sizeof(int )) );
-			statusH = cusolverDnSgeqrf(cusolverH, n, k, Wd, n, d_tau, d_work, lwork, d_info );
-			assert(statusH == CUSOLVER_STATUS_SUCCESS);
-			gpuErrchk( cudaDeviceSynchronize() );
-			statusH = cusolverDnSorgqr( cusolverH, n, k, k, Wd, n, d_tau, d_work, lwork, d_info );
-			assert(statusH == CUSOLVER_STATUS_SUCCESS);
-			gpuErrchk( cudaMemcpy( Wt, Wd, sizeof(float)*n*k, cudaMemcpyDeviceToHost));
-			matcpy( n, k, "RowMajor", W, ldw, "ColMajor", Wt, n); 
-			gpuErrchk( cudaFree(d_work) );			
-			delete[] Wt; 
-			gpuErrchk( cudaFree(Wd) ); 
-			printf("ortho done\n");
-		}*/
 
 		// C= W'*K*W -> Q = K*W; C=W'*Q
 		/* Q=K*W */
@@ -2123,7 +2098,6 @@ START_TIMER
 			gpuErrchk(cudaFree(Xd));
 		}
 		printf(" done. "); 
-
 
 		double l1 = w[k-1];
 		free(CC);

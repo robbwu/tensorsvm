@@ -8,10 +8,10 @@ ifeq ($(UNAME), Darwin)
 	LFLAGS=-L${MKLROOT}/lib -Wl,-rpath,${MKLROOT}/lib -lmkl_rt -lpthread -lm -ldl
 else
 	CXX=nvcc
-	CFLAGS=-O3    -m64 -I${MKLROOT}/include -DCUDA -gencode=arch=compute_70,code=compute_70
-	# CFLAGS=-g    -m64 -I${MKLROOT}/include	-DCUDA
-#-gencode=arch=compute_70,code=compute_70   -gencode=arch=compute_70,code=sm_70
+	CFLAGS=-O2   -m64 -I${MKLROOT}/include -DCUDA -gencode=arch=compute_70,code=compute_70
+	#CFLAGS=-g    -m64 -I${MKLROOT}/include	-DCUDA -gencode=arch=compute_70,code=compute_70   -gencode=arch=compute_70,code=sm_70
 	LFLAGS=-Xlinker -rpath,${MKLROOT}/lib -lnvblas -lmkl_rt -lpthread -lm -ldl -lcudart -lcublas -lcusolver
+	#LFLAGS=-Xlinker -rpath,${MKLROOT}/lib  -lmkl_rt -lpthread -lm -ldl -lcudart -lcublas -lcusolver
 endif
 
 target:  tensorsvm-train-mixed
@@ -29,4 +29,4 @@ tensorsvm-train-mixed: tensorsvm-train.cu
 
 
 clean:
-	rm tensorsvm-train tensorsvm-train-single tensorsvm-train-mixed
+	rm tensorsvm-train 
