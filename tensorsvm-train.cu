@@ -1568,7 +1568,7 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 			gpuErrchk( cudaMemcpy( Wd, Wt, sizeof(float)*ib*k, cudaMemcpyHostToDevice));
 			gpuErrchk( cudaMemcpy( Qd, Qt, sizeof(float)*ib*k, cudaMemcpyHostToDevice));
 			cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, k, k, ib, &done,
-						Wd, ib, Qd, ib, &dzero, Cd, k); 
+						Wd, ib, Qd, ib, &dzero/* should be $done?? */, Cd, k); 
 		}
 		// need to make C symmetric! 
 		cudaFree(Wd); cudaFree(Qd); 
@@ -1597,7 +1597,7 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 			gpuErrchk( cudaMemcpy( Qd, Qt, sizeof(double)*ib*k, cudaMemcpyHostToDevice));
 			double done = 1; 
 			cublasDgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, k, k, ib, &done,
-						Wd, ib, Qd, ib, &dzero, Cd64, k); 
+						Wd, ib, Qd, ib, &done, Cd64, k); 
 		}
 		cudaFree(Wd); cudaFree(Qd); 
 		free(Wt); free(Qt); 
@@ -1710,7 +1710,7 @@ END_TIMER
 		float *Wd, *Ud; 
 		gpuErrchk( cudaMalloc( &Wd, sizeof(float) * NN * k ) );
 		gpuErrchk( cudaMalloc( &Ud, sizeof(float) * NN * k ) );
-		
+		cudaMemset( Ud, 0, sizeof(float)*NN*k );
 		for (int i=0; i<N; i+=NN) {
 			int ib = min(NN, N-i); 
 			matcpy(ib, k, "ColMajor", Wt, ib, "RowMajor", &W[i*ldw], ldw);
