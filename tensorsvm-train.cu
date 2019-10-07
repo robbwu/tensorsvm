@@ -1557,23 +1557,24 @@ void mpc(double *Z, double *a, double C, double *X, double *Xi, int N, int d)
 		// writematrix("zscaled.csv", Zdscaled, N, d, d);
 		clock_gettime(CLOCK_MONOTONIC, &start);	/* mark start time */
 		{	// M = Zdscaled' * Zdscaled
-			cblas_dsyrk(CblasRowMajor, CblasLower, CblasTrans, d, N, 1.0, Zdscaled, d, 0, M, d);
-			
-			// cudaMemset( Md, 0, sizeof(double) * d * d );
-		
-			// for(int i=0; i<N; i+=NN) {
-			// 	ib = min(NN, N-i); 
-				
-			// 	matcpy( ib, d, "ColMajor", Zt, ib, "RowMajor", &Zdscaled[i*d], d );
-			// 	gpuErrchk( cudaMemcpyAsync( Zd, Zt, sizeof(double)*min(NN,N)*d, cudaMemcpyHostToDevice )); 
-			// 	gpuErrchk( cudaMemcpy( Zd, Zt, sizeof(double)*ib*d, cudaMemcpyHostToDevice )); 
-			// 	double done = 1.0; 
-			// 	cublasDsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_T, d, ib, &done,
-			// 				Zd, ib, &done, Md, d);
+            if ( 1.0*N*d*8 <= 4e9 ) {
+                cblas_dsyrk(CblasRowMajor, CblasLower, CblasTrans, d, N, 1.0, Zdscaled, d, 0, M, d);
+            } else {
+                cudaMemset( Md, 0, sizeof(double) * d * d );
 
-			// }
-			// gpuErrchk( cudaMemcpy( Mt, Md, sizeof(double)*d*d, cudaMemcpyDeviceToHost));
-			// matcpy(d,d,"RowMajor", M, d, "ColMajor", Mt, d);
+                for(int i=0; i<N; i+=NN) {
+                    int ib = min(NN, N-i); 
+
+                    matcpy( ib, d, "ColMajor", Zt, ib, "RowMajor", &Zdscaled[i*d], d );
+                    gpuErrchk( cudaMemcpy( Zd, Zt, sizeof(double)*ib*d, cudaMemcpyHostToDevice )); 
+                    double done = 1.0; 
+                    cublasDsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_T, d, ib, &done,
+                            Zd, ib, &done, Md, d);
+
+                }
+                gpuErrchk( cudaMemcpy( Mt, Md, sizeof(double)*d*d, cudaMemcpyDeviceToHost));
+                matcpy(d,d,"RowMajor", M, d, "ColMajor", Mt, d);
+            }
 		}
 		clock_gettime(CLOCK_MONOTONIC, &end);	/* mark the end time */
 		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;
