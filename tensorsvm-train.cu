@@ -840,47 +840,46 @@ int main(int argc, char *argv[])
 
 
 	if( T == 0 ){ 	// Linear SVM.
-		printf("Unimplemented T==0\n. ");
-#if 0
-    // primal-dual interior point method
-    //printf("%.0f %.0f\n", LABELS[4660], LABELS[512]);
+        printf("Linear SVM\n");
+        double *Z = new double[N*d];
+        double *Y = new double[N];
+        matcpy( N, d, "RowMajor", Z, d, "RowMajor", INST, d );
+        matcpy( N, 1, "RowMajor", Y, 1, "RowMajor", LABELS, 1 );
 		for( int i=0; i<N; i++ )
-			cblas_dscal(d, LABELS[i], &INST[i*d], 1);
+			cblas_dscal(d, Y[i], &Z[i*d], 1);
 
-	// test the kernel matrix multiplication
+        //writematrix("/Users/pwu/ownCloud/Projects/2019June_TensorSVM/Z.csv", Z, N, d, d);
+		mpc(Z, Y, C, X, Xi, N, d);
 
-
-	//writematrix("/Users/pwu/ownCloud/Projects/2019June_TensorSVM/Z.csv", INST, N, d, d);
-
-		mpc(INST, LABELS, C, X, Xi, N, d);
-
-		// unlabel the INST matrix;
+		// unlabel the Z matrix;
 		for( int i=0; i<N; i++ )
-			cblas_sscal(d, LABELS[i], &INST[i*d], 1);
+			cblas_dscal(d, Y[i], &Z[i*d], 1);
 
 		// write to the model
 		writemodel(modelfilepath, X, C, NULL); // No use of U
 
 		// prediction if test file is supplied
 		if( testfilepath ) {
-			double *testlabels, *testinst;
-			long testN, testd;
-			libsvmread(testfilepath, &testlabels, &testinst, &testN, &testd);
-			if( testd != d ) {
-				printf("training #feature(%d) != testing feature (%d)\n",
-					   d, testd);
-				//return 0;
-			}
-			printf("\n\nPredicting on the test file %s...\n", testfilepath);
-			printf("Number of test instances %ld, test features %ld\n", testN, testd);
-			for( int i=0; i<testN; i++ ) {
-				if( testlabels[i] == POS ) testlabels[i] = 1;
-				else if( testlabels[i] == NEG ) testlabels[i] = -1;
-			}
-			predict(X,  testlabels, testinst, testN, testd);
+            printf(" prediction unsupported \n");
+			//double *testlabels, *testinst;
+			//long testN, testd;
+			//libsvmread(testfilepath, &testlabels, &testinst, &testN, &testd);
+			//if( testd != d ) {
+				//printf("training #feature(%d) != testing feature (%d)\n",
+					   //d, testd);
+				////return 0;
+			//}
+			//printf("\n\nPredicting on the test file %s...\n", testfilepath);
+			//printf("Number of test instances %ld, test features %ld\n", testN, testd);
+			//for( int i=0; i<testN; i++ ) {
+				//if( testlabels[i] == POS ) testlabels[i] = 1;
+				//else if( testlabels[i] == NEG ) testlabels[i] = -1;
+			//}
+			//predict(X,  testlabels, testinst, testN, testd);
 
 		}
-#endif
+        delete[] Z;
+        delete[] Y;
 	} else if ( T == 2 ) { // RBF kernel.
 		printf("RBF kernel: gamma=%.3e, C=%.3e ", g, C);
 		printf("Approximation Rank K=%d\n", K);
