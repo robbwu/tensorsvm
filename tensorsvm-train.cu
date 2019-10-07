@@ -1630,29 +1630,80 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 	fclose(f3);
 #endif
 
-//#ifdef DEBUG
+// C_EIG: C=L*L' through eigen analysis, otherwise with Cholesky. 
+#define C_EIG
+#ifdef C_EIG
+START_TIMER
 	{
+		printf("eigen decomposition of C..."); 
 	// spectral analysis of C (therefore the low rank apprixmation)
 		double *CC = (double*) malloc( sizeof(double)*k*k );
 		double *w = (double*) malloc( sizeof(double)*k ); // ews in ascending order
+		float *X = new float[k*k]; 
 
 		//memcpy(CC, C, sizeof(double)*k*k);
 		matcpy( k, k, "ColMajor", CC, k, "ColMajor", C, k);
-		LAPACKE_dsyevd( LAPACK_COL_MAJOR, 'N', 'L', k, CC, k, w);
-		int i; 
-		for (i=0; i<k; i++) {
-			if(w[i]/w[k-1]>1e-16)
-				break;
+		int info = LAPACKE_dsyevd( LAPACK_COL_MAJOR, 'V', 'L', k, CC, k, w);
+		if (info != 0) {
+			printf("Error: DSYEVD info=%d", info); 
 		}
-		printf("i=%d \n");
-		printf("[LRA]: l_n=%.3e, l_i=%.3e, l_1=%.3e\n", w[k-1], w[i], w[0]);
-		if (i>0) printf("should change rank from %d to %d\n", k, k-i);
-		//k = k-i; 
+		printf("[LRA]: C: largest ew=%.3e, smallest ew=%.3e\n", w[k-1], w[0]);
+		// eigenvalues in w in ascending order. 
+		int i, realk=k; 
+		// C = X*X'
+		for (i=0; i<k; i++) {
+			double s; 
+			if (w[i] > 0 ) {
+				s = sqrt(w[i]); 
+			} else {
+				s = 0;
+				realk--;
+			}
+			for (int j=0; j<k; j++) {
+				X[j + i*k] = s * CC[j + i*k]; 
+			}
+		}
+		printf("real rank is %d", realk); 
+
+		printf(" U=W*X  ");
+		{
+			float *Wt = (float*) malloc( sizeof(float) * NN * k );
+			float *Ut = (float*) malloc( sizeof(float) * NN * k );
+			float *Wd, *Ud, *Xd; 
+			gpuErrchk( cudaMalloc( &Wd, sizeof(float) * NN * k ) );
+			gpuErrchk( cudaMalloc( &Ud, sizeof(float) * NN * k ) );
+
+			gpuErrchk( cudaMalloc( &Xd, sizeof(float) * k * k ) );
+			gpuErrchk( cudaMemcpy( Xd, X, sizeof(float) * k * k, cudaMemcpyHostToDevice));
+
+			//gpuErrchk( cudaMemset( Ud, 0, sizeof(float)*NN*k ) ); // Ud = 0. 
+			printf(" in %d chunks", (N+NN-1)/NN); 
+			for (int i=0; i<N; i+=NN) {
+				int ib = min(NN, N-i); 
+				matcpy(ib, k, "ColMajor", Wt, ib, "RowMajor", &W[i*ldw], ldw);
+				gpuErrchk( cudaMemcpy( Wd, Wt, sizeof(float) * ib * k, cudaMemcpyHostToDevice));
+				float sone = 1.0, szero = 0.0; 
+				cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+							ib, k, k, 
+							&sone, Wd, ib, Xd, k, &szero, Ud, ib); 
+				gpuErrchk( cudaMemcpy( Ut, Ud, sizeof(float) * ib * k, cudaMemcpyDeviceToHost));
+				matcpy(ib, k, "RowMajor", &U[i*ldu], ldu, "ColMajor", Ut, ib); 
+			}
+			free(Wt); free(Ut);
+			gpuErrchk(cudaFree(Wd)); 
+			gpuErrchk(cudaFree(Ud));
+			gpuErrchk(cudaFree(Xd));
+		}
+		printf(" done. "); 
+
+
 		double l1 = w[k-1];
 		free(CC);
 		free(w);
+		delete[] X; 
 	}
-//#endif
+END_TIMER
+#else
 
 	printf("C Cholesky factorize...");
 START_TIMER
@@ -1675,7 +1726,7 @@ START_TIMER
 		}
 		cudaFree( d_info);
 	}
-#else
+#else 
 	{  // C=L*L' on CPU
 		printf(" on CPU "); 
 		float *CC = new float[k*k]; 
@@ -1698,7 +1749,7 @@ START_TIMER
 		delete[] CC; 
 
 	}
-#endif
+
 	printf("done\n");
 END_TIMER
 
@@ -1727,7 +1778,8 @@ END_TIMER
 		gpuErrchk(cudaFree(Ud));
 	}
 	printf(" done. \n"); 
-	
+#endif	
+#endif
 
 	if (flag_analysis) {
 		// WARNING: THis piece of code does not work with OOC. 
