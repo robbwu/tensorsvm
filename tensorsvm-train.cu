@@ -82,6 +82,7 @@ long d = 0; // number of features
 lapack_int *IPIV;
 
 int flag_analysis = 0; 
+int flag_tensorcore = 0;
 
 
 void parsecmd(int, char *[]);
@@ -809,7 +810,9 @@ int main(int argc, char *argv[])
 	long n, nf;
 	libsvmread(trainfilepath, &labels, &inst, &n, &nf);
 	LABELS = labels; INST = inst; N = n; d = nf;
-	printf("Dataset size %ld #features %ld\n", N, d);
+	
+	if (flag_tensorcore)
+		printf("\e[31mUsing TensorCore \e[39m\n");
 
 	if (NN!=0) {
 		printf("Truncating the input file to first %ld instances\n", NN);
@@ -885,15 +888,15 @@ int main(int argc, char *argv[])
         delete[] Z;
         delete[] Y;
 	} else if ( T == 2 ) { // RBF kernel.
-		printf("RBF kernel: gamma=%.3e, C=%.3e ", g, C);
-		printf("Approximation Rank K=%d\n", K);
+		printf("\e[34mRBF kernel: gamma=%.3e, C=%.3e ", g, C);
+		printf("Approximation Rank K=%d\e[39m\n", K);
 		double *U = (double *) malloc( sizeof(double) * N*K );
 		int ldu = K;
 		clock_gettime( CLOCK_MONOTONIC, &start);
 		double l1 = LRA(INST, d, U, ldu,  N, K);
 		clock_gettime( CLOCK_MONOTONIC, &end);
 		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;
-		printf("LRA elapsed time = %.0f seconds\n",  diff);
+		printf("\e[95mLRA elapsed time = %.0f seconds\e[39m\n",  diff);
 		// FILE *f3 = fopen("U.csv","w");
 		// for( int i=0; i<N; i++ ){
 		// 	for( int j=0; j<K; j++ ){
@@ -917,7 +920,7 @@ int main(int argc, char *argv[])
 		}
 		clock_gettime( CLOCK_MONOTONIC, &end);
 		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;
-		printf("MPC elapsed time = %.0f seconds\n",  diff);
+		printf("\e[95mMPC elapsed time = %.0f seconds\e[39m\n",  diff);
 
 #ifdef DEBUG
 		printf("Calculating Primal/Dual Objective...");
@@ -1061,6 +1064,8 @@ void parsecmd(int argc, char *argv[])
 		} else if (strcmp(argv[i], "-analysis") == 0) {
 			// no argument to this option
 			flag_analysis = 1; 
+		} else if (strcmp(argv[i], "-tensorcore") == 0) {
+			flag_tensorcore = 1;
 		} else {
 			if (!modelfileflag) {
 				trainfilepath = argv[i];
@@ -1834,7 +1839,7 @@ void testKerMat(double *Z)
 // matrix approxmation.
 double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 {
-	const int NN = 100000; // block size for out of core processing
+	const int NN = 100000; // block size for out of core processing, 8192*12
 	k = K;
 	cublasHandle_t handle;
 	if (cublasCreate(&handle) != CUBLAS_STATUS_SUCCESS) {
@@ -1928,7 +1933,7 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 			free(Z1t); free(Z2t); free(Qt); free(Wt); 
 			cudaFree(Zd1); cudaFree(Zd2); cudaFree(Yd1); cudaFree(Yd2); cudaFree(Qd); cudaFree(Wd);
 		};
-		printf("(ldq ldw)=(%d,%d)\n", ldq, ldw);
+		
 		printf("rbf_kermatmul1 ");
 		START_TIMER
 		RBF_KERMATMUL(Q, ldq, W, ldw, d); 
@@ -1960,6 +1965,7 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 	//cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, k, k, N, &done, Wd, N, Qd, N, &dzero,
 	//			Cd, k);
 	printf("Compute C ");
+START_TIMER
 #ifdef C_FP32
 	{
 		// use Cd; col-major
@@ -2025,7 +2031,8 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 		cudaFree(Cd64);
 	}
 #endif
-	printf (" done \n"); 
+	printf (" done "); 
+END_TIMER
 	// is C symmetric? 
 	
 #ifdef DEBUG
@@ -2365,10 +2372,19 @@ void rbf_kermatmul(float *Zd1, int ldz1, float *Zd2, int ldz2, float *Yd1, float
 			gpuErrchk( cudaPeekAtLastError() );
 			//gpuErrchk( cudaDeviceSynchronize() );
 			// XIJ is column major!!
-			stat = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, ib, jb, d,
-							   &sone, &Zd1[i], ldz1,
-							   &Zd2[j], ldz2, &szero,
-							   XIJ, ib);
+			if (flag_tensorcore && d >= 256) {
+				stat = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T, ib, jb, d,
+								   &sone, &Zd1[i], CUDA_R_32F,ldz1,
+								   &Zd2[j], CUDA_R_32F,ldz2, &szero,
+								   XIJ, CUDA_R_32F, ib,
+								   CUDA_R_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);	
+			} else {
+				stat = cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_T, ib, jb, d,
+								   &sone, &Zd1[i], ldz1,
+								   &Zd2[j], ldz2, &szero,
+								   XIJ, ib);		
+	
+			}
 			if (stat != CUBLAS_STATUS_SUCCESS) 
 				printf ("cublasSgemm failed %s\n", __LINE__);
 			gpuErrchk( cudaPeekAtLastError() );
@@ -2384,9 +2400,17 @@ void rbf_kermatmul(float *Zd1, int ldz1, float *Zd2, int ldz2, float *Yd1, float
 			//gpuErrchk( cudaDeviceSynchronize() );
 			if (k>1) {
 			// this works for both k=1 or k>1.
-				cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, ib, k, jb,
-							&sone, buf, B, &Ad[j], lda,
-							&sone, &Bd[i], ldb);
+				if (!flag_tensorcore || k < 256) {
+					cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, ib, k, jb,
+								&sone, buf, B, &Ad[j], lda,
+								&sone, &Bd[i], ldb);
+				}
+				else {
+					cublasGemmEx( handle, CUBLAS_OP_N, CUBLAS_OP_N, ib, k, jb, 
+								  &sone, buf, CUDA_R_32F, B, &Ad[j], CUDA_R_32F, lda,
+					 			  &sone, &Bd[i], CUDA_R_32F, ldb, 
+					 			  CUDA_R_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+				}
 			} else if (k==1) {
 			// 	// printf("Unimplemented! %s\n", __LINE__);
 			// 	// exit(-1);
