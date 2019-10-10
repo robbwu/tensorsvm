@@ -469,6 +469,7 @@ void printmatrixDevice(char *filename, float *dA, int lda, int m, int n)
 }
 
 //transpose a Matrix
+
 void transpose(float *dA, int lda, int m, int n, cublasHandle_t handle, cudaStream_t stream)
 {
 	float *dC;
@@ -486,7 +487,23 @@ void transpose(float *dA, int lda, int m, int n, cublasHandle_t handle, cudaStre
 	cudaMemcpyAsync(dA, dC, m * n * sizeof(float), cudaMemcpyDeviceToDevice, stream);
 	cudaFree(dC);
 }
-
+void transpose(double *dA, int lda, int m, int n, cublasHandle_t handle, cudaStream_t stream)
+{
+	double *dC;
+	gpuErrchk(cudaMalloc(&dC, sizeof(double)*m*n));
+	double alpha = 1.0;
+	double beta = 0.0;
+	cublasDgeam(handle,
+		CUBLAS_OP_T, CUBLAS_OP_T,
+		m, n,
+		&alpha,
+		dA, lda,
+		&beta,
+		dA, lda,
+		dC, m);
+	cudaMemcpyAsync(dA, dC, m * n * sizeof(double), cudaMemcpyDeviceToDevice, stream);
+	cudaFree(dC);
+}
 //dA is overwrite by Q, dR is overwrite by R
 void QnR(float *dA, int lda, int m, int n, cusolverDnHandle_t cusolverH, cudaStream_t stream)
 {
@@ -1441,6 +1458,11 @@ void mpc(double *Z, double *a, double C, double *X, double *Xi, int N, int d)
 {
 	cublasHandle_t handle; 
 	cublasCreate(&handle); 
+	cudaStream_t stream, stream_comm;
+	cudaStreamCreate(&stream);
+	cublasSetStream(handle, stream); 
+	cudaStreamCreate(&stream_comm);
+
 	struct timespec start, end;
 	float diff;
 	// printf("mpc: N=%d, d=%d\n", N, d);
@@ -1569,7 +1591,7 @@ void mpc(double *Z, double *a, double C, double *X, double *Xi, int N, int d)
 		// writematrix("zscaled.csv", Zdscaled, N, d, d);
 		clock_gettime(CLOCK_MONOTONIC, &start);	/* mark start time */
 		{	// M = Zdscaled' * Zdscaled
-            if ( 1.0*N*d*8 <= 4e9 ) {
+            if ( 1.0*N*d*8 <= 4 ) {
                 cblas_dsyrk(CblasRowMajor, CblasLower, CblasTrans, d, N, 1.0, Zdscaled, d, 0, M, d);
             } else {
                 cudaMemset( Md, 0, sizeof(double) * d * d );
@@ -1577,11 +1599,15 @@ void mpc(double *Z, double *a, double C, double *X, double *Xi, int N, int d)
                 for(int i=0; i<N; i+=NN) {
                     int ib = min(NN, N-i); 
 
-                    matcpy( ib, d, "ColMajor", Zt, ib, "RowMajor", &Zdscaled[i*d], d );
-                    gpuErrchk( cudaMemcpy( Zd, Zt, sizeof(double)*ib*d, cudaMemcpyHostToDevice )); 
+                    //matcpy( ib, d, "ColMajor", Zt, ib, "RowMajor", &Zdscaled[i*d], d );
+                    //gpuErrchk( cudaMemcpy( Zd, Zt, sizeof(double)*ib*d, cudaMemcpyHostToDevice )); 
+                    gpuErrchk( cudaMemcpy( Zd, &Zdscaled[i*d], sizeof(double)*ib*d, cudaMemcpyHostToDevice )); 
+                    //cudaStreamSynchronize(stream_comm); 
+                    transpose( Zd, d, ib, d, handle, stream);
                     double done = 1.0; 
                     cublasDsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_T, d, ib, &done,
                             Zd, ib, &done, Md, d);
+                    //cudaDeviceSynchronize();
 
                 }
                 gpuErrchk( cudaMemcpy( Mt, Md, sizeof(double)*d*d, cudaMemcpyDeviceToHost));
@@ -1842,6 +1868,9 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 	const int NN = 100000; // block size for out of core processing, 8192*12
 	k = K;
 	cublasHandle_t handle;
+    cudaStream_t stream; 
+    cudaStreamCreate(&stream); 
+    cublasSetStream(handle, stream); 
 	if (cublasCreate(&handle) != CUBLAS_STATUS_SUCCESS) {
         printf ("CUBLAS initialization failed\n");
         // return EXIT_FAILURE;
@@ -1887,7 +1916,7 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 		//rbf_kermatmul(Zd, N, Yd, Qd, N, Wd, N, N, k, handle);
 		// W = K*Q, on CPU. W,K,Q are all row-major
 		//int d = d; 
-		auto RBF_KERMATMUL = [k,Z,ldz, handle](float *Q, int ldq, float *W, int ldw, int d)
+		auto RBF_KERMATMUL = [k,Z,ldz, handle,stream](float *Q, int ldq, float *W, int ldw, int d)
 		{ 
 			printf(" in %d chunks ", (N+NN-1)/NN); 
 			float *Z1t = (float*) malloc( sizeof(float) * NN * d );
@@ -1908,22 +1937,37 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 				gpuErrchk( cudaMemset(Wd, 0, sizeof(float)*NN*k) ); //Wd = 0; 
 				for (int j=0; j<N; j+=NN) { 
 					int cn = min(NN, N-j); 
-					
-					matcpy(rn, d, "ColMajor", Z1t, rn, "RowMajor", &Z[i*ldz], ldz );
-					matcpy(cn, d, "ColMajor", Z2t, cn, "RowMajor", &Z[j*ldz], ldz );
-					matcpy(cn, k, "ColMajor", Qt,  cn, "RowMajor", &Q[j*ldq], ldq );
 
-					gpuErrchk( cudaMemcpy( Zd1, Z1t, sizeof(float)*rn*d, cudaMemcpyHostToDevice) );
-					gpuErrchk( cudaMemcpy( Zd2, Z2t, sizeof(float)*cn*d, cudaMemcpyHostToDevice) );
+
+
+
+
+					gpuErrchk( cudaMemcpy( Zd1, &Z[i*ldz], sizeof(float)*rn*d, cudaMemcpyHostToDevice) );
+					gpuErrchk( cudaMemcpy( Zd2, &Z[j*ldz], sizeof(float)*cn*d, cudaMemcpyHostToDevice) );
+					gpuErrchk( cudaMemcpy( Qd,  &Q[j*ldq] , sizeof(float)*cn*k, cudaMemcpyHostToDevice) );
+					if (ldz != d || ldq != k) {
+						printf(" error: ldz,d , ldq,k = %d, %d, %d, %d\n", ldz, d, ldq, k); 
+						exit(1);
+					}
+                    transpose(  Zd1, d, rn, d, handle, stream ); 
+                    transpose(  Zd2, d, cn, d, handle, stream ); 
+                    transpose(  Qd,  k, cn, k, handle, stream ); 
+					//matcpy(rn, d, "ColMajor", Z1t, rn, "RowMajor", &Z[i*ldz], ldz );
+					//matcpy(cn, d, "ColMajor", Z2t, cn, "RowMajor", &Z[j*ldz], ldz );
+					//matcpy(cn, k, "ColMajor", Qt,  cn, "RowMajor", &Q[j*ldq], ldq );
+
 					gpuErrchk( cudaMemcpy( Yd1, &LABELS[i], sizeof(float) * rn, cudaMemcpyHostToDevice) );
 					gpuErrchk( cudaMemcpy( Yd2, &LABELS[j], sizeof(float) * cn, cudaMemcpyHostToDevice) );
-					gpuErrchk( cudaMemcpy( Qd, Qt, sizeof(float)*cn*k, cudaMemcpyHostToDevice) );
+
+					//cudaDeviceSynchronize();
+
 
 					// Wd += K[i,j]*Q[j] 
 					//printf("RBFKER: d=%d k=%d (i,j)=(%d,%d) (rn,cn)=(%d,%d) \n",
 					//	               d,   k, i, j,         rn, cn); 
 					rbf_kermatmul(Zd1, rn, Zd2, cn, Yd1, Yd2, Qd, cn, Wd, rn, 
 					   /*sizes*/  rn, cn, k, handle);
+
 										
 				}
 				gpuErrchk( cudaMemcpy( Wt, Wd, sizeof(float) * rn * k, cudaMemcpyDeviceToHost ) ); 
@@ -2238,6 +2282,7 @@ END_TIMER
 	free(W);
 	free(C);
 
+    cudaStreamDestroy( stream );
 	cublasDestroy(handle);
 	cusolverDnDestroy(cusolverH);
 	//return l1;
