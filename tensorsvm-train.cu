@@ -1591,7 +1591,7 @@ void mpc(double *Z, double *a, double C, double *X, double *Xi, int N, int d)
 		// writematrix("zscaled.csv", Zdscaled, N, d, d);
 		clock_gettime(CLOCK_MONOTONIC, &start);	/* mark start time */
 		{	// M = Zdscaled' * Zdscaled
-            if ( 1.0*N*d*8 <= 4 ) {
+            if ( 1.0*N*d*8 <= 4e9 ) {
                 cblas_dsyrk(CblasRowMajor, CblasLower, CblasTrans, d, N, 1.0, Zdscaled, d, 0, M, d);
             } else {
                 cudaMemset( Md, 0, sizeof(double) * d * d );
@@ -1725,14 +1725,8 @@ void NewtonStep(double *Z, double *D, double *M, double C, double *a, double *X,
 		r5[i] = r1[i] - r3[i]/X[i] + r4[i] / (C - X[i]);
 		r7[i] = r5[i];
 	}
-    using namespace std::chrono;
-    auto t1 = high_resolution_clock::now();
 	SMWSolve(Z, D, M, r7, &work[3*N], d); // overwrites r7;
-    auto t2 = high_resolution_clock::now();
-    duration<double> time_span = duration_cast<duration<double>>(t2 - t1);
-#ifdef DEBUG
-    printf("SMWSolve in %.3f seconds.\n", time_span.count());
-#endif
+
 	r6 = r2[0] + cblas_ddot(N, a, 1, r7, 1);
 	for( int i=0; i<N; i++ ) b[i] = a[i];
 	SMWSolve(Z, D, M, b, &work[3*N], d);
