@@ -143,8 +143,8 @@ void matcpy(int m, int n,  const char *Amajor, T* A, int lda, const char *Bmajor
 }
 
 // debuging devise
-
-void writematrix(char *filename, double *A, int m, int n, int lda)
+template<typename T>
+void writematrix(char *filename, T *A, int m, int n, int lda)
 {
 
 	FILE *f = fopen(filename, "w");
@@ -269,9 +269,9 @@ double writemodel(char *path, double *X,  double C, double *U)
 {
 	int nSV = 0, nBSV = 0;
 	for( int i=0; i<N; i++ ){
-		if( X[i] > 1e-3 ) {
+		if( X[i] > 1e-6 ) {
 			nSV++;
-			if( X[i] < C-1e-3 ) {
+			if( X[i] < C-1e-6 ) {
 				nBSV++;
 			}
 		}
@@ -282,13 +282,14 @@ double writemodel(char *path, double *X,  double C, double *U)
 
 	int svi = 0, bsvi = 0;
 	for( int i=0; i<N; i++ ) {
-		if( X[i] > 1e-3 ) {
+		if( X[i] > 1e-6 ) {
 			iSV[svi++] = i;
-			if( X[i] < C-1e-3 ) {
+			if( X[i] < C-1e-6 ) {
 				iBSV[bsvi++] = i;
 			}
 		}
 	}
+	//writematrix("X.csv", X, N, 1, 1 );
 	printf("#BSV %d, #SV %d\n", nBSV, nSV);
 	// calculate w=sum alpha_i y_i x_i
 	double b = 0;
@@ -301,20 +302,49 @@ double writemodel(char *path, double *X,  double C, double *U)
 			}
 		}
 		// calculate b
-
+		int nn = std::min(nBSV,1000);
+		std::vector<double> bs(nn, 0);
 		if( nBSV > 0 ) {
-			for( int i=0; i<nBSV; i++ ) {
+			double sum = 0;
+			for( int i=0; i<nn; i++ ) {
 				int j = iBSV[i];
-				b += LABELS[j];
+				
+				double tmp = LABELS[j];
 				for( int k=0; k<d; k++ ) {
-					b -= w[k]*INST[j*d+k];
+					tmp -= w[k]*INST[j*d+k];
 				}
+				bs[i] = tmp;
+				sum += tmp;
 			}
-			b = b/nBSV;
+			b = sum/nn;
+			double sumsq = 0;
+			for( int j=0; j<bs.size(); j++ ) 
+			    sumsq += (bs[j]-b)*(bs[j]-b);
+			printf("approx mean b=%.6e std b=%.6e, #samples=%d\n ", b, sqrt(sumsq/bs.size()), bs.size());
 		} else {
 			printf("Empty boundary SV! Give up.\n");
 			b = 0;
 		}
+
+        { // writing files in LIBSVM format
+    		FILE *f = fopen(path, "w");
+    	    if (!f) {
+    	        fprintf(stderr,"Can't open %s\n",path);
+    	        exit(1);
+    	    }
+    		fprintf(f,"solver_type L2R_L1LOSS_SVC_DUAL\n");
+    		fprintf(f,"nr_class 2\n");
+
+    		fprintf(f,"label %d %d\n", POS, NEG);
+    		fprintf(f,"nr_feature %d\n", d);
+    		fprintf(f,"bias %d\n", 1);
+    		fprintf(f,"w\n");
+			for(int i=0; i<d; i++)
+				fprintf(f, "%.16f \n", w[i]);
+			fprintf(f,"%.16f\n",b);
+    		fclose(f);
+ 
+        }
 	} else if (T==2) { // RBF Kernel
         {
             double acc = 0;
@@ -340,37 +370,43 @@ double writemodel(char *path, double *X,  double C, double *U)
                 sumsq += (bs[j]-b)*(bs[j]-b);
             printf("approx mean b=%.6e std b=%.6e, #samples=%d\n ", b, sqrt(sumsq/bs.size()), bs.size());
         }
+        { // writing files in LIBSVM format
+    		FILE *f = fopen(path, "w");
+    	    if (!f) {
+    	        fprintf(stderr,"Can't open %s\n",path);
+    	        exit(1);
+    	    }
+    		fprintf(f,"svm_type c_svc\n");
+    		if( T== 0 )
+    			fprintf(f,"kernel_type linear\n");
+    		else if( T == 2 ) {
+    			fprintf(f,"kernel_type rbf\n");
+    			fprintf(f,"gamma %.7f\n", g);
+    		}
+    		fprintf(f,"nr_class 2\n");
+    		fprintf(f,"total_sv %d\n", nSV);
+    		fprintf(f,"rho %f\n", -b);
+    		fprintf(f,"label %d %d\n", POS, NEG);
+    		fprintf(f,"nr_sv %d %d\n", nBSV, nSV-nBSV);
+    		fprintf(f,"SV\n");
+    		for( int i=0; i<nSV; i++ ) {
+    			int j = iSV[i];
+    			fprintf(f, "%7f ", LABELS[j]*X[j]);
+    			for( int k=0; k<d; k++ ) {
+    				if( INST[j*d+k]>0 || INST[j*d+k]<0) {
+    					fprintf(f, "%d:%7f ", k+1, INST[j*d+k]);
+    				}
+    			}
+    			fprintf(f, "\n");
+    		}
+    		fclose(f);
+ 
+        }
+	} else {
+		printf("unimplemeted -t %d", T);
+		exit(1);
 	}
 
-	FILE *f = fopen(path, "w");
-    if (!f) {
-        fprintf(stderr,"Can't open %s\n",path);
-        exit(1);
-    }
-	fprintf(f,"svm_type c_svc\n");
-	if( T== 0 )
-		fprintf(f,"kernel_type linear\n");
-	else if( T == 2 ) {
-		fprintf(f,"kernel_type rbf\n");
-		fprintf(f,"gamma %.7f\n", g);
-	}
-	fprintf(f,"nr_class 2\n");
-	fprintf(f,"total_sv %d\n", nSV);
-	fprintf(f,"rho %f\n", -b);
-	fprintf(f,"label %d %d\n", POS, NEG);
-	fprintf(f,"nr_sv %d %d\n", nBSV, nSV-nBSV);
-	fprintf(f,"SV\n");
-	for( int i=0; i<nSV; i++ ) {
-		int j = iSV[i];
-		fprintf(f, "%7f ", LABELS[j]*X[j]);
-		for( int k=0; k<d; k++ ) {
-			if( INST[j*d+k]>0 || INST[j*d+k]<0) {
-				fprintf(f, "%d:%7f ", k+1, INST[j*d+k]);
-			}
-		}
-		fprintf(f, "\n");
-	}
-	fclose(f);
 	free(iSV); free(iBSV);
 	return b;
 }
@@ -873,14 +909,20 @@ int main(int argc, char *argv[])
 			cblas_dscal(d, Y[i], &Z[i*d], 1);
 
         //writematrix("/Users/pwu/ownCloud/Projects/2019June_TensorSVM/Z.csv", Z, N, d, d);
+        START_TIMER
+        printf("mpc ");
 		mpc(Z, Y, C, X, Xi, N, d);
+		END_TIMER
 
-		// unlabel the Z matrix;
+		// unlabel the Z matrix; why?
 		for( int i=0; i<N; i++ )
 			cblas_dscal(d, Y[i], &Z[i*d], 1);
 
 		// write to the model
+		START_TIMER
+		printf("Writemodel ");
 		writemodel(modelfilepath, X, C, NULL); // No use of U
+		END_TIMER
 
 		// prediction if test file is supplied
 		if( testfilepath ) {
@@ -1480,27 +1522,58 @@ void mpc(double *Z, double *a, double C, double *X, double *Xi, int N, int d)
 
 	setmat(e, N, 1);
 
-	cblas_dgemv(CblasRowMajor, CblasTrans, N, d, 1.0, Z, d, e, 1, 0, q, 1); // q = Z'*e;
-	cblas_dgemv(CblasRowMajor, CblasNoTrans, N, d, 1.0, Z, d, q, 1, 0, e, 1); // e = Z*q;
 
-	double qq = cblas_dnrm2(N, e, 1);
-	qq = qq*qq;
-	double qe = 0;
-	for( int i=0; i<N; i++ ) qe += e[i];
-	double ox = qe/qq;
-	printf("ox=%f\n", ox);
-	if( ox < 0.99*C && ox > 0.01*C ) {
-		setmat(X, N, ox);
-	} else if( ox > 0.99*C ) {
-		setmat(X, N, 0.99*C);
-	} else if( ox < 0.01*C ) {
-		setmat(X, N, 0.01*C);
+
+	if (T==2) { // RBF
+		cblas_dgemv(CblasRowMajor, CblasTrans, N, d, 1.0, Z, d, e, 1, 0, q, 1); // q = Z'*e;
+		cblas_dgemv(CblasRowMajor, CblasNoTrans, N, d, 1.0, Z, d, q, 1, 0, e, 1); // e = Z*q;
+		double qq = cblas_dnrm2(N, e, 1);
+		qq = qq*qq;
+		double qe = 0;
+		for( int i=0; i<N; i++ ) qe += e[i];
+		double ox = qe/qq;
+		printf("ox=%f\n", ox);
+		if( ox < 0.99*C && ox > 0.01*C ) {
+			setmat(X, N, ox);
+		} else if( ox > 0.99*C ) {
+			setmat(X, N, 0.99*C);
+		} else if( ox < 0.01*C ) {
+			setmat(X, N, 0.01*C);
+		}
+		setmat(S, N, 1.0);
+		setmat(Xi, N, 1.0);
+	} else if (T==0) { // linear
+		// cblas_dgemv(CblasRowMajor, CblasTrans, N, d, 1.0, Z, d, e, 1, 0, q, 1); // q = Z'*e;
+		// cblas_dgemv(CblasRowMajor, CblasNoTrans, N, d, 1.0, Z, d, q, 1, 0, e, 1); // e = Z*q;
+		double qq = cblas_dnrm2(N, e, 1);
+		qq = qq*qq;
+		double qe = 0;
+		for( int i=0; i<N; i++ ) qe += e[i];
+		double ox = qe/qq;
+		printf("ox=%f\n", ox);
+		if( ox < 0.99*C && ox > 0.01*C ) {
+			setmat(X, N, ox);
+		} else if( ox > 0.99*C ) {
+			setmat(X, N, 0.99*C);
+		} else if( ox < 0.01*C ) {
+			setmat(X, N, 0.01*C);
+		}
+		// now adjust S and XI to make dx small (actually 0)
+		setmat(S, N, 1.0);
+		setmat(Xi, N, 1.0);
+		cblas_dgemv(CblasRowMajor, CblasTrans, N, d, 1.0, Z, d, X, 1, 0, q, 1); // q = Z'*e;
+		cblas_dgemv(CblasRowMajor, CblasNoTrans, N, d, 1.0, Z, d, q, 1, 0, e, 1); // e = Z*q;
+		for (int i=0; i<N; i++) {
+			double t = e[i] - a[i]*y -1; 
+			if (t>0) S[i]  += t;
+			else     Xi[i] -= t;
+		}
 	}
+
 	//writematrix("/Users/pwu/ownCloud/Projects/2019June_TensorSVM/X.csv", X, N, 1, 1);
 	setmat(r, 3*N+1, 0);
 	setmat(r_aff, 3*N+1, 0);
-	setmat(S, N, 1.0);
-	setmat(Xi, N, 1.0);
+
 
 	double *D = (double*) malloc(sizeof(double)*N);
 	int iter = 0;
@@ -1569,7 +1642,7 @@ void mpc(double *Z, double *a, double C, double *X, double *Xi, int N, int d)
 				iter, mu, normdx, normdy, D[imax]/D[imin], primalobj, dualobj);
 			break;
 		}
-		if( D[imax]/D[imin] > 1e16 ) {
+		if( D[imax]/D[imin] > 1e18 ) {
 			printf("D is too ill-conditioned %.3e! Terminating.\n", D[imax]/D[imin]);
 			printf("iter %d, mu=%.3e, normdx=%.3e, normdy=%.3e max/min(D)=%.3e pobj=%.9e dobj=%.9e\n",
 				iter, mu, normdx, normdy, D[imax]/D[imin], primalobj, dualobj);
