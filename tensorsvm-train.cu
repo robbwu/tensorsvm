@@ -50,7 +50,7 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 #define END_TIMER \
 		clock_gettime(CLOCK_MONOTONIC, &end);	/* mark the end time */\
 		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;\
-		printf("elapsed time = %.3f seconds\n",  diff);\
+		printf("elapsed time = %.4f seconds\n",  diff);\
 		}
 
 
@@ -302,7 +302,7 @@ double writemodel(char *path, double *X,  double C, double *U)
 			}
 		}
 		// calculate b
-		int nn = std::min(nBSV,1000);
+		int nn = std::min(nBSV,5000);
 		std::vector<double> bs(nn, 0);
 		if( nBSV > 0 ) {
 			double sum = 0;
@@ -2504,12 +2504,10 @@ void rbf_kermatmul(float *Zd1, int ldz1, float *Zd2, int ldz2, float *Yd1, float
 			dim3 threadsPerBlock(32,32);
 			dim3 numBlocks( (ib+threadsPerBlock.x-1)/threadsPerBlock.x,
 							(jb+threadsPerBlock.y-1)/threadsPerBlock.y );
-			// printf("ib=%d, jb=%d, B=%d, TPB.(x,y)=(%d,%d), B.(x,y)=(%d,%d)\n",
-			// 	   ib, jb, B, threadsPerBlock.x, threadsPerBlock.y,
-			// 	   numBlocks.x, numBlocks.y);
+
 			rbf_kergen<<<numBlocks, threadsPerBlock>>>( ib, jb, buf, B, XI, XJ, XIJ, ib, g, &Yd1[i], &Yd2[j]);
 			gpuErrchk( cudaPeekAtLastError() );
-			//gpuErrchk( cudaDeviceSynchronize() );
+
 			if (k>1) {
 			// this works for both k=1 or k>1.
 				if (!flag_tensorcore || k < 256) {
@@ -2529,6 +2527,7 @@ void rbf_kermatmul(float *Zd1, int ldz1, float *Zd2, int ldz2, float *Yd1, float
 				cublasSgemv(handle, CUBLAS_OP_N, ib, jb, &sone,
 							buf, B, &Ad[j], 1, &sone, &Bd[i], 1);
 			}
+
 		}
 	}
 
