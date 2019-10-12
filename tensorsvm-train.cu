@@ -349,14 +349,14 @@ double writemodel(char *path, double *X,  double C, double *U)
         {
             double acc = 0;
             std::vector<double> bs(std::min(nBSV,50), 0);
-            for (int j=0; j<std::min(nBSV,50); j++) {
-                int jj = iBSV[j];
+            for (long j=0; j<std::min(nBSV,50); j++) {
+                long jj = iBSV[j];
                 double yj = LABELS[jj];
-                for (int i=0; i<nSV; i++) {
-                    int ii = iSV[i];
+                for (long i=0; i<nSV; i++) {
+                    long ii = iSV[i];
                     double sum = 0; 
-                    for (int k=0; k<K; k++) {
-                        sum += U[ii*K+k] * U[jj*K+ k];
+                    for (long k=0; k<K; k++) {
+                        sum += U[ii*(long)K+k] * U[jj*(long)K+ k];
                     }
                     yj -= X[ii] * LABELS[jj] * sum; 
                 }
