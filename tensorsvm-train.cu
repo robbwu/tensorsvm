@@ -730,7 +730,7 @@ void CAQR(float *Q, int m, int n, int lda, int em, int k)
 
 	int nr = 0;//nr-th R
 
-	for (int i = 0; i < m*n; i += em*k)
+	for (long i = 0; i < (long)m*(long)n; i += em*k)
 	{
 		printf("%d-th block\n", i);
 		//need to be transpose
