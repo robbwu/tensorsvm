@@ -52,7 +52,11 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;\
 		printf("elapsed time = %.4f seconds\n",  diff);\
 		}
-
+#define END_TIMER_PRINT_IF(exp) \
+		clock_gettime(CLOCK_MONOTONIC, &end);	/* mark the end time */\
+		diff = (end.tv_sec - start.tv_sec) + 1.0*(end.tv_nsec - start.tv_nsec)/BILLION;\
+		if(exp) printf("elapsed time = %.4f seconds\n",  diff);\
+		}
 
 #define BILLION 1000000000L
 #define MAX_MPC_ITER 100
@@ -83,6 +87,7 @@ lapack_int *IPIV;
 
 int flag_analysis = 0; 
 int flag_tensorcore = 0;
+int flag_scale256 = 0;
 
 
 void parsecmd(int, char *[]);
@@ -1125,7 +1130,9 @@ void parsecmd(int argc, char *argv[])
 			flag_analysis = 1; 
 		} else if (strcmp(argv[i], "-tensorcore") == 0) {
 			flag_tensorcore = 1;
-		} else {
+		} else if (strcmp(argv[i], "-scale256") == 0) {
+			flag_scale256 = 1;
+		}else {
 			if (!modelfileflag) {
 				trainfilepath = argv[i];
 				modelfileflag = 1;
@@ -1244,6 +1251,7 @@ void libsvmread(char *file, float **labels, float **inst, long *n, long *nf)
 
 			errno = 0;
 			(*inst)[i* *nf + index] = strtod(val,&endptr);
+			if (flag_scale256) (*inst)[i* *nf + index] /= 256;
 			if (endptr == val || errno != 0 || (*endptr != '\0' && !isspace(*endptr)))
 			{
 				printf("Wrong input format at line %lu\n",i+1);
@@ -1669,7 +1677,7 @@ void mpc(double *Z, double *a, double C, double *X, double *Xi, int N, int d)
             } else {
                 cudaMemset( Md, 0, sizeof(double) * d * d );
 
-                for(int i=0; i<N; i+=NN) {
+                for(long i=0; i<N; i+=NN) {
                     int ib = min(NN, N-i); 
 
                     //matcpy( ib, d, "ColMajor", Zt, ib, "RowMajor", &Zdscaled[i*d], d );
@@ -1954,6 +1962,7 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 	double diff;
 
 	// Q: n*k, row-major
+	printf("Generating random Gaussian matrix...");
 	float *Q = (float*) malloc( sizeof(float)*n*k );
 	int ldq = k; 
 	for( int i=0; i<n; i++ ) {
@@ -1961,7 +1970,9 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 			Q[i*ldq+j] = gaussrand();
 		}
 	}
+	printf("Done\n");
 	// W: n*k, row-major
+	printf("Allocating memory...");
 	float *W = (float*) malloc( N*k*sizeof(float) );
 	int ldw = k; 
 
@@ -1974,8 +1985,9 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 	gpuErrchk( cudaMalloc( &d_tau, sizeof(float)*k ) );
 
 
-	float *C = (float*) malloc( sizeof(float)*k*k );	// row-major
 
+	float *C = (float*) malloc( sizeof(float)*k*k );	// row-major
+	printf("Done\n");
 
 	for(int pr=0; pr<1; pr++) {
 
@@ -1983,9 +1995,11 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 		//rbf_kermatmul(Zd, N, Yd, Qd, N, Wd, N, N, k, handle);
 		// W = K*Q, on CPU. W,K,Q are all row-major
 		//int d = d; 
-		auto RBF_KERMATMUL = [k,Z,ldz, handle,stream](float *Q, int ldq, float *W, int ldw, int d)
+		auto RBF_KERMATMUL = [k,Z,ldz, &handle,&stream](float *Q, int ldq, float *W, int ldw, int d)
 		{ 
-			printf(" in %d chunks ", (N+NN-1)/NN); 
+			int chunks = (N+NN-1)/NN;
+			printf(" in %d chunks ", chunks); 
+			printf(" Progress: %d \n", chunks*chunks);
 			float *Z1t = (float*) malloc( sizeof(float) * NN * d );
 			float *Z2t = (float*) malloc( sizeof(float) * NN * d );
 			float *Qt  = (float*) malloc( sizeof(float) * NN * k );
@@ -2032,9 +2046,11 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 					// Wd += K[i,j]*Q[j] 
 					//printf("RBFKER: d=%d k=%d (i,j)=(%d,%d) (rn,cn)=(%d,%d) \n",
 					//	               d,   k, i, j,         rn, cn); 
+					START_TIMER
 					rbf_kermatmul(Zd1, rn, Zd2, cn, Yd1, Yd2, Qd, cn, Wd, rn, 
 					   /*sizes*/  rn, cn, k, handle);
-
+					END_TIMER_PRINT_IF( (i==0 && j==0))
+					
 										
 				}
 				gpuErrchk( cudaMemcpy( Wt, Wd, sizeof(float) * rn * k, cudaMemcpyDeviceToHost ) ); 
@@ -2045,7 +2061,7 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 			cudaFree(Zd1); cudaFree(Zd2); cudaFree(Yd1); cudaFree(Yd2); cudaFree(Qd); cudaFree(Wd);
 		};
 		
-		printf("rbf_kermatmul1 ");
+		printf("\nrbf_kermatmul1\n");
 		START_TIMER
 		RBF_KERMATMUL(Q, ldq, W, ldw, d); 
 		END_TIMER
@@ -2484,6 +2500,8 @@ void rbf_kermatmul(float *Zd1, int ldz1, float *Zd2, int ldz2, float *Yd1, float
 			gpuErrchk( cudaPeekAtLastError() );
 			//gpuErrchk( cudaDeviceSynchronize() );
 			// XIJ is column major!!
+			// START_TIMER
+			// printf("XIJ ");
 			if (flag_tensorcore && d >= 256) {
 				stat = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T, ib, jb, d,
 								   &sone, &Zd1[i], CUDA_R_32F,ldz1,
@@ -2497,6 +2515,8 @@ void rbf_kermatmul(float *Zd1, int ldz1, float *Zd2, int ldz2, float *Yd1, float
 								   XIJ, ib);		
 	
 			}
+			// cudaDeviceSynchronize();
+			// END_TIMER
 			if (stat != CUBLAS_STATUS_SUCCESS) 
 				printf ("cublasSgemm failed %s\n", __LINE__);
 			gpuErrchk( cudaPeekAtLastError() );
@@ -2504,10 +2524,15 @@ void rbf_kermatmul(float *Zd1, int ldz1, float *Zd2, int ldz2, float *Yd1, float
 			dim3 threadsPerBlock(32,32);
 			dim3 numBlocks( (ib+threadsPerBlock.x-1)/threadsPerBlock.x,
 							(jb+threadsPerBlock.y-1)/threadsPerBlock.y );
-
+			// START_TIMER
+			// printf("RBF Kergen ");
 			rbf_kergen<<<numBlocks, threadsPerBlock>>>( ib, jb, buf, B, XI, XJ, XIJ, ib, g, &Yd1[i], &Yd2[j]);
-			gpuErrchk( cudaPeekAtLastError() );
 
+			gpuErrchk( cudaPeekAtLastError() );
+			cudaDeviceSynchronize();
+			// END_TIMER
+			// START_TIMER
+			// printf("K*A ");
 			if (k>1) {
 			// this works for both k=1 or k>1.
 				if (!flag_tensorcore || k < 256) {
@@ -2527,7 +2552,8 @@ void rbf_kermatmul(float *Zd1, int ldz1, float *Zd2, int ldz2, float *Yd1, float
 				cublasSgemv(handle, CUBLAS_OP_N, ib, jb, &sone,
 							buf, B, &Ad[j], 1, &sone, &Bd[i], 1);
 			}
-
+			// cudaDeviceSynchronize();
+			// END_TIMER
 		}
 	}
 
