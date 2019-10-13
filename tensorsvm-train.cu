@@ -16,6 +16,7 @@
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <cusolverDn.h>
+#include <cusparse.h>
 #include <thrust/transform_reduce.h>
 #include <thrust/functional.h>
 #include <thrust/device_vector.h>
@@ -83,11 +84,12 @@ lapack_int *IPIV;
 
 int flag_analysis = 0; 
 int flag_tensorcore = 0;
-
+int flag_sparse = 0; 
 
 void parsecmd(int, char *[]);
 void help_msg();
 void libsvmread(char *filepath, float **labels, float **inst, long *n, long *nf);
+void libsvmread_sparse(char *file, float *&labels, float *&vals, int *&cols, int *&rows, long &n, long &nf);
 void setmat(double *mat, int n, double val);
 void NewtonStep(double *Z, double *D, double *M, double C, double *a, double *X, double *S, double *Xi, double *r, double *work,
 				int d);
@@ -861,13 +863,25 @@ int main(int argc, char *argv[])
 	clock_t before = clock();
 	float *labels, *inst;
 	long n, nf;
-	libsvmread(trainfilepath, &labels, &inst, &n, &nf);
-	LABELS = labels; INST = inst; N = n; d = nf;
-	
+	float *vals;
+	int *rows, *cols; 
+	if (!flag_sparse)  {
+		libsvmread(trainfilepath, &labels, &inst, &n, &nf);
+		LABELS = labels; INST = inst; N = n; d = nf;
+	} else {
+		libsvmread_sparse(trainfilepath, labels, vals, cols, rows, n, nf); 
+		LABELS = labels; 
+		return; 
+	}
+
 	if (flag_tensorcore)
 		printf("\e[31mUsing TensorCore \e[39m\n");
 
 	if (NN!=0) {
+		if (flag_sparse) {
+			printf(" Error: unimplemted feature: truncating. :%d", __LINE__); 
+			exit(1); 
+		}
 		printf("Truncating the input file to first %ld instances\n", NN);
 		N = NN; // only use the first NN instances; check -N options.
 	}
@@ -1043,8 +1057,8 @@ int main(int argc, char *argv[])
 		}
 	}
 	// clean up
-	free(INST);
-	free(LABELS);
+	if(!INST) free(INST);
+	if(!LABELS) free(LABELS);
 
 	free(X);
 	free(Xi);
@@ -1125,6 +1139,8 @@ void parsecmd(int argc, char *argv[])
 			flag_analysis = 1; 
 		} else if (strcmp(argv[i], "-tensorcore") == 0) {
 			flag_tensorcore = 1;
+		} else if (strcmp(argv[i], "-sparse") == 0 ) {
+			flag_sparse = 1; 
 		} else {
 			if (!modelfileflag) {
 				trainfilepath = argv[i];
@@ -1201,6 +1217,8 @@ void libsvmread(char *file, float **labels, float **inst, long *n, long *nf)
 		max_index = max(max_index, inst_max_index);
 		l++;
 	}
+
+
 	*labels = (float*) malloc( sizeof(float)*l);
 	*inst = (float*) calloc( l*max_index, sizeof(float)); // row major
 	*n = l; *nf = max_index;
@@ -1267,6 +1285,301 @@ void libsvmread(char *file, float **labels, float **inst, long *n, long *nf)
 	}
 	printf("\n");
 
+}
+
+// read libsvm format dataset into CSR format. 
+// will allocate memory for vals, rows, cols
+// will overwrite n, and nf with #samples, #features
+// vals: non-zeros values;
+// cols: the col index of the corresponding vals
+// rows: the index into cols indicating the start of row
+void libsvmread_sparse(char *file, float *&labels, float *&vals, int *&cols, int *&rows, long &n, long &nf)
+{
+	// 1st pass: determine N, d, class
+	FILE *f = fopen(file, "r");
+    if (!f) {
+        fprintf(stderr,"Can't open %s\n", file);
+        exit(1);
+    }
+
+	char line[BUF_SIZE];
+	char *endptr;
+
+	int max_index, min_index, inst_max_index;
+	size_t elements, k, i, l=0;
+	max_index = 0;
+	min_index = 1; // our index starts from 1
+	elements = 0;
+
+	while( fgets(line, BUF_SIZE, f)  ) {
+		char *idx, *val;
+		// features
+		int index = 0;
+		// strtol gives 0 if wrong format, and precomputed kernel has <index> start from 0
+		inst_max_index = -1;
+		strtok(line," \t"); // label
+
+		while (1)
+		{
+			idx = strtok(NULL,":"); // index:value
+			val = strtok(NULL," \t");
+			if(val == NULL)
+				break;
+
+			errno = 0;
+			index = (int) strtol(idx,&endptr,10);
+			if(endptr == idx || errno != 0 || *endptr != '\0' || index <= inst_max_index)
+			{
+				printf("Wrong input format at line %lu\n",l+1);
+				return;
+			}
+			else
+				inst_max_index = index;
+
+			min_index = min(min_index, index);
+			elements++;
+		}
+		max_index = max(max_index, inst_max_index);
+		l++;
+	}
+
+
+	// *labels = (float*) malloc( sizeof(float)*l);
+	// *inst = (float*) calloc( l*max_index, sizeof(float)); // row major
+	n = l; nf = max_index;
+	vals = new float[elements]; 
+	cols = new int[elements];
+	rows = new int[l+1];
+	labels = new float[l]; 
+
+	// 2nd pass: populate the label and instance array.
+	rewind(f);
+	printf("Dataset size %ld #features %d nnz=%zd nnz/all=%3f%%\n",
+		l, max_index, elements, 100.0*elements / ( n * nf) ) ;
+
+	k=0;
+	//int j;
+	rows[0] = 0; 
+	for(i=0;i<l;i++)
+	{
+		char *idx, *val, *label;
+		int index;
+
+		fgets(line, BUF_SIZE, f);
+
+		label = strtok(line," \t\n");
+		if(label == NULL)
+		{
+			printf("Empty line at line %lu\n",i+1);
+			return;
+		}
+		labels[i] = strtod(label,&endptr);
+		if(endptr == label || *endptr != '\0')
+		{
+			printf("Wrong input format at line %lu\n",i+1);
+			return;
+		}
+
+		// features
+		while(1)
+		{
+			idx = strtok(NULL,":");
+			val = strtok(NULL," \t");
+			if(val == NULL) { // row ends
+				rows[i+1] = k; 
+				break;
+			}
+
+			index = (int) strtol(idx, &endptr, 10) - min_index; // base 1 to base 0.
+
+			errno = 0;
+			//(*inst)[i* *nf + index] = strtod(val,&endptr);
+			vals[k] = strtod(val,&endptr); 
+			cols[k] = index; 
+
+			if (endptr == val || errno != 0 || (*endptr != '\0' && !isspace(*endptr)))
+			{
+				printf("Wrong input format at line %lu\n",i+1);
+				return;
+			}
+			++k;
+
+		}
+	}
+	rows[l] = elements;
+
+	fclose(f);
+
+#if 0
+	srand (time(NULL));
+	int r = rand()%l; 
+	//printf(" DEBUG: print out the %d row:\n", r); 
+	//printf("rows[0,1,2]=%d,%d,%d", rows[0], rows[1], rows[2]);
+	//printf("cols[0,1,2]=%d,%d,%d", cols[0], cols[1], cols[2]);
+	printf(" %dth row: nnz=%d\n", r, rows[r+1]-rows[r]);
+	for( int i=rows[r]; i<rows[r+1]; i++ ) {
+		printf("%d:%.7f ", cols[i], vals[i]);
+	}
+	printf("\n");
+	printf("rows[l]=%d\n", rows[l]); 
+
+	{
+		FILE *f = fopen("tmp.libsvm", "w"); 
+		for(int i=0; i<l; i++) {
+			fprintf(f, "%d ", (int)labels[i]); 
+			for(int j=rows[i]; j<rows[i+1]; j++) {
+				fprintf(f, "%d:%.7e ", cols[j], vals[j]);
+			}
+			fprintf(f, "\n"); 
+		}
+	}
+#endif
+	{
+		int sprkd_GPU(long n, long k, long nnz, float *AvalsH, int *AcolsH, int *ArowsH, float *C, int ldc);
+		int n = min(l, NN); 
+		// float *C = new float[n*n];
+		float *C;
+		if ( n < 1000 ) {
+			C = new float[n*n];
+		}
+		printf("n=%d, nf=%d, nnz=%d\n", n, nf, rows[n]-rows[0]);
+		START_TIMER
+		sprkd_GPU(n, nf, rows[n]-rows[0], vals, cols, rows, C, n); 
+		END_TIMER
+		if (n<1000) writematrix("C.csv", C, n, n, n);
+		if (n<1000) delete[] C; 
+	}
+}
+
+// C = A*trans(A); A is CSR on CPU. 
+#define CLEANUP(str) printf("%s, %d\n", str, __LINE__);
+int sprkd_GPU(long n, long k, long nnz, float *AvalsH, int *AcolsH, int *ArowsH, float *C, int ldc)
+{
+
+	cusparseStatus_t status; 
+	cusparseHandle_t handle; 
+	status= cusparseCreate(&handle);
+	if (status != CUSPARSE_STATUS_SUCCESS) {
+	    CLEANUP("CUSPARSE Library initialization failed");
+	    return 1;
+	}
+
+	cusparseMatDescr_t descA = 0, descC = 0; 
+	status= cusparseCreateMatDescr(&descA);
+	if (status != CUSPARSE_STATUS_SUCCESS) {
+	    CLEANUP("Matrix descriptor initialization failed");
+	    return 1;
+	}
+	cusparseSetMatType(descA,CUSPARSE_MATRIX_TYPE_GENERAL);
+	cusparseSetMatIndexBase(descA,CUSPARSE_INDEX_BASE_ZERO);
+	status= cusparseCreateMatDescr(&descC);
+	if (status != CUSPARSE_STATUS_SUCCESS) {
+	    CLEANUP("Matrix descriptor initialization failed");
+	    return 1;
+	}
+	cusparseSetMatType(descC,CUSPARSE_MATRIX_TYPE_GENERAL);
+	cusparseSetMatIndexBase(descC,CUSPARSE_INDEX_BASE_ZERO);
+	
+	float *Avals;
+	int *Arows, *Acols; 
+START_TIMER printf("memcpy ");
+	gpuErrchk( cudaMalloc( &Avals, sizeof(float) * (nnz))); 
+	gpuErrchk( cudaMalloc( &Arows, sizeof(int) * (n+1)) );
+	gpuErrchk( cudaMalloc( &Acols, sizeof(int) * nnz )); 
+	gpuErrchk( cudaMemcpy( Avals, AvalsH, sizeof(float) * (nnz), cudaMemcpyHostToDevice ));
+	gpuErrchk( cudaMemcpy( Arows, ArowsH, sizeof(int) * (n+1), cudaMemcpyHostToDevice ));
+	gpuErrchk( cudaMemcpy( Acols, AcolsH, sizeof(int) * (nnz), cudaMemcpyHostToDevice ));
+	cudaDeviceSynchronize();
+END_TIMER
+	int baseC, nnzC;
+	int *nnzTotalDevHostPtr = &nnzC;
+	cusparseSetPointerMode(handle, CUSPARSE_POINTER_MODE_HOST); 
+	int *Crows, *Ccols; 
+	float *Cvals; 
+	cudaMalloc( &Crows, sizeof(int)*(n+1) );
+START_TIMER printf("cusparseXcsrgemmNnz ");
+	cusparseXcsrgemmNnz( handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_TRANSPOSE, 
+		n, n, k, descA, nnz, Arows, Acols, descA, nnz, Arows, Acols, 
+		descC, Crows, nnzTotalDevHostPtr ); 
+	if (NULL != nnzTotalDevHostPtr){
+		nnzC = *nnzTotalDevHostPtr;
+	}else{
+		cudaMemcpy(&nnzC, Crows+n, sizeof(int), cudaMemcpyDeviceToHost);
+		cudaMemcpy(&baseC, Crows, sizeof(int), cudaMemcpyDeviceToHost);
+		nnzC -= baseC;
+	}
+	cudaDeviceSynchronize();
+END_TIMER
+	//printf("nnzC = %d\n", nnzC);
+	cudaMalloc((void**)&Ccols, sizeof(int)*nnzC);
+	cudaMalloc((void**)&Cvals, sizeof(float)*nnzC);
+
+
+	printf("sprkd_GPU n=%d k=%d nnz=%d nnz/all=%.3f%%\n", n, k, nnzC, 100.0*nnzC/(n*n)); 
+START_TIMER	printf("Scsrgemm ");
+	status = cusparseScsrgemm(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, CUSPARSE_OPERATION_TRANSPOSE,  
+			n, n, k,
+	        descA, nnz,
+	        Avals, Arows, Acols,
+	        descA, nnz,
+	        Avals, Arows, Acols,
+	        descC,
+	        Cvals, Crows, Ccols);
+	if (status != CUSPARSE_STATUS_SUCCESS) {
+	    CLEANUP("Scsrgemm failed");
+	    return 1;
+	}
+	cudaDeviceSynchronize();
+END_TIMER   
+
+if (n<1000) {
+START_TIMER 
+	//int n = 8192; 
+	printf("CSR2DENSE n=%d ", n);
+	float *Cd;
+	gpuErrchk( cudaMalloc( &Cd, sizeof(float)*n*n) ); 
+	cusparseScsr2dense(handle, n, n, descC, Cvals, Crows, Ccols, Cd, n); 
+	gpuErrchk( cudaMemcpy( C, Cd, sizeof(float)*n*n , cudaMemcpyDeviceToHost ));
+END_TIMER
+	}
+
+
+
+	cusparseDestroyMatDescr(descA); 
+	cusparseDestroyMatDescr(descC); 	
+	status = cusparseDestroy(handle);
+    if (status != CUSPARSE_STATUS_SUCCESS) {
+        CLEANUP("CUSPARSE Library release of resources failed");
+        return 1;
+    }
+	cudaDeviceSynchronize();
+}
+
+// SPMMD: Sparse Matrix-Matrix Multiplication and stored in Dense
+// C = A*B'
+// A, B: n*k, C: n*n (column major)
+void spmmd(long n, float *Avals, long *Acols, long *Arows, 
+				   float *Bvals, long *Bcols, long *Brows, 
+				   float *C, long ldc)
+{
+	for (long i=0; i<n; i++) {
+		for (long j=0; j<n; j++) {
+			float sum = 0; 
+			long ak = Arows[i];  // loop to Arows[i+1]
+			long bk = Brows[j];  // loop to Brows[i+1]
+			while (ak < Arows[i+1] && bk < Brows[j+1]) {
+				if (Acols[ak] == Bcols[bk]) {
+					sum += Avals[ak] * Bvals[bk]; 
+					ak++; bk++; 
+				} else if (Acols[ak] > Bcols[bk]) {
+					bk++; 
+				} else { 
+					ak++;
+				}
+			}
+			C[i+j*ldc] = sum; 
+		}
+	}
 }
 
 // [p]rojected [g]radient [d]escent solver with Nesterov's acceleration
