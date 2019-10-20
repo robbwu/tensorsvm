@@ -28,6 +28,7 @@ Enabling TensorCore: -tensorcore
 We are using ThunderSVM https://github.com/Xtra-Computing/thundersvm to predict.
 ```
 ./thundersvm-predict SUSY.testing SUSY.model output
+```
 
 Sample cmdline: 
 
