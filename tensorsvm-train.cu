@@ -1943,9 +1943,10 @@ double LRA(float *Z, int ldz, double *U, int ldu, long n, long k)
 	const int NN = 100000; // block size for out of core processing, 8192*12
 	k = K;
 	cublasHandle_t handle;
-    cudaStream_t stream; 
-    cudaStreamCreate(&stream); 
-    cublasSetStream(handle, stream); 
+    	cudaStream_t stream; 
+	cublasCreate(&handle);
+    	cudaStreamCreate(&stream); 
+    	cublasSetStream(handle, stream); 
 	if (cublasCreate(&handle) != CUBLAS_STATUS_SUCCESS) {
         printf ("CUBLAS initialization failed\n");
         // return EXIT_FAILURE;
